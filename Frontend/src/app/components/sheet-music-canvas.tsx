@@ -192,10 +192,12 @@ function staffBoundaryYs(container: HTMLElement, lineSpacingPx: number): number[
   return boundaries;
 }
 
-// Compute absolute halftone from a ParsedNote (C4 = 60)
+// Compute absolute halftone from a ParsedNote using OSMD's convention:
+// halfTone = step + 12 * (octave + Pitch.octXmlDiff) where octXmlDiff=3 in OSMD 1.9.7.
+// So C4 → 0 + 12*(4+3) = 84. This must match Pitch.halfTone for pitch-based matching to work.
 function parsedHalfTone(n: ParsedNote): number {
   const s: Record<string, number> = { C:0, D:2, E:4, F:5, G:7, A:9, B:11 };
-  return (n.octave + 1) * 12 + (s[n.step] ?? 0) + Math.round(n.alter);
+  return (n.octave + 3) * 12 + (s[n.step] ?? 0) + Math.round(n.alter);
 }
 
 function buildHitsFromOsmd(
@@ -249,8 +251,8 @@ function buildHitsFromOsmd(
                 groupEl.querySelector(".vf-notehead, .vf-note-head, [class*='notehead']") ??
                 groupEl;
               const r = nhEl.getBoundingClientRect();
-              // Invisible note (e.g. second half of a tie) — no hit to register.
-              if (r.width === 0 && r.height === 0) continue;
+              // Note: don't skip zero-bounds notes here — they still need to consume
+              // a candidate slot (tie-end notes are invisible but occupy a ParsedNote slot).
 
               // --- Pitch-based matching ---
               // OSMD iterates beat-by-beat (all voices per beat), but parseMusicXml
@@ -294,6 +296,9 @@ function buildHitsFromOsmd(
               if (matchIdx === -1) continue;
               used.add(matchIdx);
 
+              // Invisible note (e.g. second half of a tie) — slot consumed but no hit.
+              if (r.width === 0 && r.height === 0) continue;
+
               hits.push({
                 note: candidates[matchIdx],
                 x: r.left + r.width / 2 - containerRect.left,
@@ -308,7 +313,8 @@ function buildHitsFromOsmd(
     }
 
     return hits.length > 0 ? hits : null;
-  } catch {
+  } catch (e) {
+    console.warn("[SMC] buildHitsFromOsmd threw:", e);
     return null;
   }
 }
@@ -444,9 +450,8 @@ export const SheetMusicCanvas = forwardRef<SheetMusicCanvasHandle, Props>(functi
     try {
       const { notes } = parseMusicXml(musicXml);
       const lineSpacingPx = measureLineSpacing(osmdDivRef.current);
-      const rawHits =
-        buildHitsFromOsmd(osmdRef.current, osmdDivRef.current, notes, lineSpacingPx) ??
-        buildHits(osmdDivRef.current, notes);
+      const osmdHits = buildHitsFromOsmd(osmdRef.current, osmdDivRef.current, notes, lineSpacingPx);
+      const rawHits = osmdHits ?? buildHits(osmdDivRef.current, notes);
 
       // Hit positions are computed relative to osmdDivRef, but the SVG overlay is
       // absolutely positioned relative to wrapperRef (which includes the title section
@@ -595,6 +600,29 @@ export const SheetMusicCanvas = forwardRef<SheetMusicCanvasHandle, Props>(functi
               pointerEvents: "none",
             }}
           >
+            {/* Blinking insert cursor for selected rests — separate from edit selection */}
+            {noteHits
+              .filter((hit) =>
+                hit.note.isRest &&
+                selectedNotes.some(
+                  (n) => n.measure === hit.note.measure && n.xmlIndex === hit.note.xmlIndex
+                )
+              )
+              .map((hit, i) => {
+                const top = hit.y - 2.5 * hit.lineSpacingPx;
+                const bot = hit.y + 2.5 * hit.lineSpacingPx;
+                return (
+                  <g key={`cursor-${i}`} style={{ pointerEvents: "none" }}>
+                    <line
+                      x1={hit.x} y1={top} x2={hit.x} y2={bot}
+                      stroke="#1C1917" strokeWidth="2" strokeLinecap="round"
+                    >
+                      <animate attributeName="opacity" values="1;1;0;0;1" keyTimes="0;0.4;0.5;0.9;1" dur="1.2s" repeatCount="indefinite" />
+                    </line>
+                  </g>
+                );
+              })}
+
             {/* Note hit ellipses rendered first so chord rects sit on top */}
             {noteHits.map((hit, i) => {
               const isSelected = selectedNotes.some(

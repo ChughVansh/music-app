@@ -1,14 +1,17 @@
 import { ChevronUp, ChevronDown, Plus } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import type { ParsedNote } from "../lib/parse-musicxml";
 import { pitchLabel, applyDiatonicStep } from "../lib/parse-musicxml";
 
 const DURATIONS = [
-  { label: "Whole", value: "whole" },
-  { label: "Half", value: "half" },
-  { label: "Quarter", value: "quarter" },
-  { label: "8th", value: "eighth" },
-  { label: "16th", value: "sixteenth" },
+  { label: "Whole",  value: "whole"     },
+  { label: "Half •", value: "half."     },
+  { label: "Half",   value: "half"      },
+  { label: "Qtr •",  value: "quarter."  },
+  { label: "Qtr",    value: "quarter"   },
+  { label: "8th •",  value: "eighth."   },
+  { label: "8th",    value: "eighth"    },
+  { label: "16th",   value: "sixteenth" },
 ];
 
 const ACCIDENTALS = [
@@ -28,6 +31,7 @@ interface PropertiesPanelProps {
   onDurationChange: (note: ParsedNote, type: string) => void;
   onDelete: (note: ParsedNote) => void;
   onAddChordNote: (note: ParsedNote, step: string, octave: number, alter: number) => void;
+  onConvertToNote?: (note: ParsedNote, step: string, octave: number, alter: number, noteType: string) => void;
 }
 
 export function PropertiesPanel({
@@ -37,9 +41,24 @@ export function PropertiesPanel({
   onDurationChange,
   onDelete,
   onAddChordNote,
+  onConvertToNote,
 }: PropertiesPanelProps) {
   const [addingChord, setAddingChord] = useState(false);
   const [chordAlter, setChordAlter] = useState(0);
+  const [noteAlter, setNoteAlter] = useState(0);
+  const [noteOctave, setNoteOctave] = useState(4);
+  const [noteType, setNoteType] = useState<string | null>(null);
+  const [addNoteOpen, setAddNoteOpen] = useState(false);
+
+  // Reset per-note state when the selected note changes
+  useEffect(() => {
+    setNoteAlter(0);
+    setNoteOctave(4);
+    setNoteType(null);
+    setAddingChord(false);
+    setChordAlter(0);
+    setAddNoteOpen(false);
+  }, [note?.id]);
   const handleUp = () => {
     if (!note || note.isRest) return;
     const { step, octave } = applyDiatonicStep(note.step, note.octave, 1);
@@ -90,6 +109,96 @@ export function PropertiesPanel({
                 M{note.measure + 1} · {note.type}{note.isRest ? " rest" : ""}
               </div>
             </div>
+
+            {/* Note picker — collapsible, shown when cursor is on a rest */}
+            {note.isRest && onConvertToNote && (
+              <div>
+                <button
+                  onClick={() => setAddNoteOpen((v) => !v)}
+                  className="w-full flex items-center justify-between py-2 px-3 rounded-lg border-2 border-dashed border-[#1C1917]/30 text-xs font-semibold text-[#1C1917]/60 hover:border-[#1C1917]/60 hover:text-[#1C1917] hover:bg-[#F5F0E8]/60 transition-all"
+                >
+                  <span>Add Note</span>
+                  <Plus className={`w-3.5 h-3.5 transition-transform ${addNoteOpen ? "rotate-45" : ""}`} />
+                </button>
+
+                {addNoteOpen && (
+                  <div className="mt-2 space-y-1.5">
+                    {/* Duration */}
+                    <div className="grid grid-cols-3 gap-1">
+                      {DURATIONS.map((d) => {
+                        const active = (noteType ?? note.type) === d.value;
+                        return (
+                          <button
+                            key={d.value}
+                            onClick={() => setNoteType(d.value)}
+                            className="py-1.5 rounded-lg text-xs font-medium transition-all border-2"
+                            style={{
+                              backgroundColor: active ? "#1C1917" : "#F5F0E8",
+                              color: active ? "white" : "#1C1917",
+                              borderColor: active ? "#1C1917" : "rgba(28,25,23,0.15)",
+                              boxShadow: active ? "2px 2px 0 #1C1917" : "none",
+                            }}
+                          >
+                            {d.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {/* Accidental */}
+                    <div className="flex gap-1">
+                      {ACCIDENTALS.map((a) => (
+                        <button
+                          key={a.value}
+                          onClick={() => setNoteAlter(a.value)}
+                          className="flex-1 py-1.5 rounded-lg text-sm font-bold border-2 transition-all"
+                          style={{
+                            backgroundColor: noteAlter === a.value ? "#1C1917" : "#F5F0E8",
+                            color: noteAlter === a.value ? "white" : "#1C1917",
+                            borderColor: noteAlter === a.value ? "#1C1917" : "rgba(28,25,23,0.15)",
+                          }}
+                        >
+                          {a.label}
+                        </button>
+                      ))}
+                    </div>
+                    {/* Note letter grid */}
+                    <div className="grid grid-cols-4 gap-1">
+                      {NOTE_STEPS.map((s) => (
+                        <button
+                          key={s}
+                          onClick={() => {
+                            onConvertToNote(note, s, noteOctave, noteAlter, noteType ?? note.type);
+                            setAddNoteOpen(false);
+                            setNoteAlter(0);
+                            setNoteType(null);
+                          }}
+                          className="py-2 rounded-lg text-sm font-bold border-2 border-[#1C1917]/20 bg-[#F5F0E8] hover:bg-[#7FFFD4] hover:border-[#1C1917] transition-all text-[#1C1917]"
+                        >
+                          {s}
+                        </button>
+                      ))}
+                    </div>
+                    {/* Octave */}
+                    <div className="flex gap-1">
+                      {[3, 4, 5].map((o) => (
+                        <button
+                          key={o}
+                          onClick={() => setNoteOctave(o)}
+                          className="flex-1 py-1 rounded text-xs font-semibold border-2 transition-all"
+                          style={{
+                            backgroundColor: noteOctave === o ? "#1C1917" : "#F5F0E8",
+                            color: noteOctave === o ? "white" : "#1C1917",
+                            borderColor: noteOctave === o ? "#1C1917" : "rgba(28,25,23,0.15)",
+                          }}
+                        >
+                          oct {o}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             {!note.isRest && (
               <>
@@ -198,7 +307,7 @@ export function PropertiesPanel({
               <label className="block text-xs font-semibold text-[#1C1917]/50 mb-1.5 uppercase tracking-wide">
                 Duration
               </label>
-              <div className="grid grid-cols-3 gap-1">
+              <div className="grid grid-cols-2 gap-1">
                 {DURATIONS.map((d) => (
                   <button
                     key={d.value}
@@ -217,13 +326,14 @@ export function PropertiesPanel({
               </div>
             </div>
 
-            {/* Delete */}
+            {/* Delete note */}
             <button
               onClick={() => onDelete(note)}
               className="w-full py-2 rounded-lg border-2 border-[#1C1917] bg-white text-[#1C1917] text-sm font-medium hover:bg-[#F2C4C4] hover:shadow-[2px_2px_0_#1C1917] transition-all"
             >
               Delete Note
             </button>
+
           </div>
         )}
       </div>

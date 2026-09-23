@@ -98,7 +98,8 @@ image = (
 web_app = FastAPI()
 web_app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["https://music-app-924.pages.dev", 
+                   "http://localhost:5173"],
     allow_methods=["POST", "OPTIONS"],
     allow_headers=["*"],
     expose_headers=["Content-Disposition"],

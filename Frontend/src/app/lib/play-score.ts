@@ -1,3 +1,5 @@
+type DrumType = "hihat" | "snare" | "kick";
+
 interface PlayNote {
   frequency: number;
   startSec: number;
@@ -7,6 +9,74 @@ interface PlayNote {
    *  alignment) but shouldn't trigger a new attack — the previous note's sound
    *  is extended to cover it instead. */
   silent?: boolean;
+  drumType?: DrumType;
+}
+
+function scheduleDrum(
+  ctx: AudioContext,
+  type: DrumType,
+  start: number,
+  nodes: { osc: AudioScheduledSourceNode; gain: GainNode }[]
+) {
+  const sampleRate = ctx.sampleRate;
+  const bufLen = Math.ceil(sampleRate * 0.25);
+  const buf = ctx.createBuffer(1, bufLen, sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < bufLen; i++) data[i] = Math.random() * 2 - 1;
+
+  const source = ctx.createBufferSource();
+  source.buffer = buf;
+
+  const filter = ctx.createBiquadFilter();
+  const gain = ctx.createGain();
+
+  if (type === "hihat") {
+    filter.type = "highpass";
+    filter.frequency.value = 7000;
+    gain.gain.setValueAtTime(0.18, start);
+    gain.gain.exponentialRampToValueAtTime(0.001, start + 0.05);
+  } else if (type === "snare") {
+    filter.type = "bandpass";
+    filter.frequency.value = 2500;
+    filter.Q.value = 0.7;
+    gain.gain.setValueAtTime(0.25, start);
+    gain.gain.exponentialRampToValueAtTime(0.001, start + 0.12);
+    // Snap tone component
+    const snap = ctx.createOscillator();
+    const snapGain = ctx.createGain();
+    snap.frequency.value = 200;
+    snapGain.gain.setValueAtTime(0.12, start);
+    snapGain.gain.exponentialRampToValueAtTime(0.001, start + 0.06);
+    snap.connect(snapGain);
+    snapGain.connect(ctx.destination);
+    snap.start(start);
+    snap.stop(start + 0.1);
+    nodes.push({ osc: snap, gain: snapGain });
+  } else {
+    // kick: noise body + pitch-swept sine
+    filter.type = "lowpass";
+    filter.frequency.value = 120;
+    gain.gain.setValueAtTime(0.12, start);
+    gain.gain.exponentialRampToValueAtTime(0.001, start + 0.08);
+    const kick = ctx.createOscillator();
+    const kickGain = ctx.createGain();
+    kick.frequency.setValueAtTime(160, start);
+    kick.frequency.exponentialRampToValueAtTime(40, start + 0.09);
+    kickGain.gain.setValueAtTime(0.55, start);
+    kickGain.gain.exponentialRampToValueAtTime(0.001, start + 0.11);
+    kick.connect(kickGain);
+    kickGain.connect(ctx.destination);
+    kick.start(start);
+    kick.stop(start + 0.15);
+    nodes.push({ osc: kick, gain: kickGain });
+  }
+
+  source.connect(filter);
+  filter.connect(gain);
+  gain.connect(ctx.destination);
+  source.start(start);
+  source.stop(start + 0.25);
+  nodes.push({ osc: source, gain });
 }
 
 const CHORD_INTERVALS: Record<string, number[]> = {
@@ -85,8 +155,21 @@ function parseForPlayback(
           const startSec = isNoteChord ? cursor - lastAdvance : cursor;
 
           if (!isRest) {
+            const unpitchedEl = child.getElementsByTagName("unpitched")[0];
             const pitchEl = child.getElementsByTagName("pitch")[0];
-            if (pitchEl) {
+            if (unpitchedEl) {
+              const displayOctave = parseInt(
+                unpitchedEl.getElementsByTagName("display-octave")[0]?.textContent ?? "4"
+              );
+              const notehead = child.getElementsByTagName("notehead")[0]?.textContent?.trim() ?? "";
+              const drumType: DrumType =
+                notehead === "x" || displayOctave >= 5
+                  ? "hihat"
+                  : displayOctave <= 3
+                  ? "kick"
+                  : "snare";
+              melodyNotes.push({ frequency: 0, startSec, durationSec: durSec * 0.9, isChord: false, drumType });
+            } else if (pitchEl) {
               const step = pitchEl.getElementsByTagName("step")[0]?.textContent?.trim() ?? "C";
               const octave = parseInt(pitchEl.getElementsByTagName("octave")[0]?.textContent ?? "4", 10);
               const alter = parseFloat(pitchEl.getElementsByTagName("alter")[0]?.textContent ?? "0");
@@ -165,7 +248,7 @@ export class ScorePlayer {
   private pauseOffset = 0;
   private startedAt = 0;
   private playing = false;
-  private nodes: { osc: OscillatorNode; gain: GainNode }[] = [];
+  private nodes: { osc: AudioScheduledSourceNode; gain: GainNode }[] = [];
   private endTimer: ReturnType<typeof setTimeout> | null = null;
   private melodyCount = 0;
   private _xml = "";
@@ -264,6 +347,11 @@ export class ScorePlayer {
 
       const start = now + (effectiveStart - this.pauseOffset);
       if (start < now - 0.01) continue;
+
+      if (note.drumType) {
+        scheduleDrum(ctx, note.drumType, start, this.nodes);
+        continue;
+      }
 
       const peakGain = note.isChord ? 0.06 : 0.15;
 

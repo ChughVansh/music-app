@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { ArrowLeft, Download, FileDown, RotateCcw, RotateCw, ChevronLeft, ChevronRight, BookmarkPlus, Loader2, Play, Pause, Square, RefreshCw } from "lucide-react";
+import { ArrowLeft, Download, FileDown, RotateCcw, RotateCw, ChevronLeft, ChevronRight, BookmarkPlus, Loader2, Play, Pause, Square, RefreshCw, Trash2, Plus } from "lucide-react";
 import { ScorePlayer } from "../lib/play-score";
 import { Link, useLocation, useNavigate } from "react-router";
 import { toast } from "sonner";
@@ -12,6 +12,9 @@ import {
   updateNotePitch,
   updateNoteDuration,
   deleteNote,
+  insertNoteAtPosition,
+  deleteMeasure,
+  addMeasure,
   applyDiatonicStep,
   transposeScore,
   addChordNote,
@@ -177,6 +180,33 @@ export function EditorPage() {
 
   const handleDelete = (note: ParsedNote) => {
     pushXml(deleteNote(currentXml, note.measure, note.xmlIndex));
+  };
+
+  const handleConvertToNote = useCallback((note: ParsedNote, step: string, octave: number, alter: number, noteType: string) => {
+    pushXml(insertNoteAtPosition(currentXml, note.measure, note.xmlIndex, step, octave, alter, noteType));
+  }, [currentXml, histIdx]);
+
+
+  const totalMeasures = cursorNotes.reduce((max, n) => Math.max(max, n.localMeasure + 1), 0);
+
+  const handleDeleteMeasure = () => {
+    if (!cursorNote || totalMeasures <= 1) return;
+    const newXml = deleteMeasure(currentXml, cursorNote.localMeasure);
+    pushXml(newXml);
+    setCursorStep(0);
+    setExtraSelected([]);
+  };
+
+  const handleAddMeasure = () => {
+    if (!cursorNote) return;
+    const newXml = addMeasure(currentXml, cursorNote.localMeasure);
+    pushXml(newXml);
+    // Move cursor to the first note of the newly inserted measure
+    const { notes: newNotes } = parseScore(newXml);
+    const newMeasureIdx = cursorNote.localMeasure + 1;
+    const firstInNew = newNotes.findIndex((n) => n.localMeasure === newMeasureIdx && n.partIndex === cursorNote.partIndex);
+    if (firstInNew !== -1) setCursorStep(firstInNew);
+    setExtraSelected([]);
   };
 
   const handleUndo = () => {
@@ -596,6 +626,29 @@ export function EditorPage() {
           </div>
         )}
 
+        {/* Add / Delete Bar buttons — shown when a note is selected */}
+        {cursorNote && (
+          <div className="flex items-center gap-1">
+            <button
+              onClick={handleAddMeasure}
+              className="flex items-center gap-1 px-2 sm:px-3 py-1.5 rounded-lg border-2 border-[#1C1917]/40 bg-white hover:bg-[#B8D4B0] hover:border-[#1C1917] text-xs font-medium text-[#1C1917]/60 hover:text-[#1C1917] transition-all shadow-[2px_2px_0_#1C1917]/30 hover:shadow-[2px_2px_0_#1C1917]"
+              title={`Insert bar after M${cursorNote.measure + 1}`}
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Add Bar</span>
+            </button>
+            <button
+              onClick={handleDeleteMeasure}
+              disabled={totalMeasures <= 1}
+              className="flex items-center gap-1 px-2 sm:px-3 py-1.5 rounded-lg border-2 border-[#1C1917]/40 bg-white hover:bg-[#F2C4C4] hover:border-[#1C1917] text-xs font-medium text-[#1C1917]/60 hover:text-[#1C1917] transition-all shadow-[2px_2px_0_#1C1917]/30 hover:shadow-[2px_2px_0_#1C1917] disabled:opacity-30 disabled:cursor-not-allowed"
+              title={`Delete bar ${cursorNote.measure + 1}`}
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Del Bar</span>
+            </button>
+          </div>
+        )}
+
         {/* Right side — transpose (hidden on mobile) + model picker */}
         <div className="ml-auto flex items-center gap-3">
           <div className="hidden md:flex items-center gap-1" title="Transpose whole piece">
@@ -700,11 +753,35 @@ export function EditorPage() {
               onClick={() => pushXml(deleteNote(currentXml, cursorNote.measure, cursorNote.xmlIndex))}
               className="px-3 py-1.5 rounded-lg border-2 border-[#1C1917] bg-white text-xs font-medium shrink-0 hover:bg-[#F2C4C4]"
             >
-              Delete
+              Delete Note
+            </button>
+            <button
+              onClick={handleAddMeasure}
+              className="px-3 py-1.5 rounded-lg border-2 border-[#1C1917]/40 bg-white text-xs font-medium shrink-0 hover:bg-[#B8D4B0] hover:border-[#1C1917]"
+            >
+              + Bar
+            </button>
+            <button
+              onClick={handleDeleteMeasure}
+              disabled={totalMeasures <= 1}
+              className="px-3 py-1.5 rounded-lg border-2 border-[#1C1917]/40 bg-white text-xs font-medium shrink-0 hover:bg-[#F2C4C4] hover:border-[#1C1917] disabled:opacity-30"
+            >
+              − Bar
             </button>
           </>
         ) : cursorNote?.isRest ? (
           <>
+            {/* Note picker for rests on mobile */}
+            {["C","D","E","F","G","A","B"].map((s) => (
+              <button
+                key={s}
+                onClick={() => pushXml(insertNoteAtPosition(currentXml, cursorNote.measure, cursorNote.xmlIndex, s, 4, 0, cursorNote.type))}
+                className="px-2.5 py-1.5 rounded-lg border-2 border-[#1C1917]/20 bg-[#F5F0E8] text-xs font-bold shrink-0 hover:bg-[#7FFFD4] hover:border-[#1C1917] transition-all text-[#1C1917]"
+              >
+                {s}
+              </button>
+            ))}
+            <div className="w-px h-4 bg-[#1C1917]/20 shrink-0" />
             {[{ label: "𝅝", value: "whole" }, { label: "𝅗𝅥", value: "half" }, { label: "♩", value: "quarter" }, { label: "♪", value: "eighth" }].map((d) => (
               <button
                 key={d.value}
@@ -774,6 +851,7 @@ export function EditorPage() {
             }
             onDelete={handleDelete}
             onAddChordNote={handleAddChordNote}
+            onConvertToNote={handleConvertToNote}
           />
         </div>
       </div>

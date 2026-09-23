@@ -104,7 +104,8 @@ export function parseMusicXml(xml: string): ParsedScore {
         const step = pitchEl?.getElementsByTagName("step")[0]?.textContent?.trim() ?? "C";
         const octave = parseInt(pitchEl?.getElementsByTagName("octave")[0]?.textContent ?? "4", 10);
         const alter = parseFloat(pitchEl?.getElementsByTagName("alter")[0]?.textContent ?? "0");
-        const type = noteEl.getElementsByTagName("type")[0]?.textContent?.trim() ?? "quarter";
+        const baseType = noteEl.getElementsByTagName("type")[0]?.textContent?.trim() ?? "quarter";
+        const type = baseType + (noteEl.getElementsByTagName("dot").length > 0 ? "." : "");
 
         if (!isChord) beat++;
         const staffNum = parseInt(noteEl.getElementsByTagName("staff")[0]?.textContent ?? "1", 10);
@@ -206,6 +207,219 @@ export function updateNotePitch(
 
   return serializeXml(doc);
 }
+
+export function addMeasure(xml: string, afterLocalMeasureIdx: number): string {
+  const doc = parseXml(xml);
+  const parts = doc.getElementsByTagName("part");
+  const partEls = parts.length > 0 ? Array.from(parts) : [doc.documentElement];
+
+  for (const part of partEls) {
+    const measures = Array.from(part.getElementsByTagName("measure"));
+    const refMeasure = measures[afterLocalMeasureIdx];
+    if (!refMeasure) continue;
+
+    // Find nearest divisions value at or before insertion point
+    let divisions = 1;
+    for (let i = afterLocalMeasureIdx; i >= 0; i--) {
+      const d = measures[i]?.getElementsByTagName("divisions")[0];
+      if (d) { divisions = parseInt(d.textContent ?? "1", 10); break; }
+    }
+
+    // Find nearest time signature at or before insertion point
+    let beats = 4, beatType = 4;
+    for (let i = afterLocalMeasureIdx; i >= 0; i--) {
+      const t = measures[i]?.getElementsByTagName("time")[0];
+      if (t) {
+        beats    = parseInt(t.getElementsByTagName("beats")[0]?.textContent    ?? "4", 10);
+        beatType = parseInt(t.getElementsByTagName("beat-type")[0]?.textContent ?? "4", 10);
+        break;
+      }
+    }
+
+    const totalDuration = Math.round(beats * (4 / beatType) * divisions);
+
+    const newMeasure = doc.createElement("measure");
+    newMeasure.setAttribute("number", String(afterLocalMeasureIdx + 2));
+
+    // Single whole-measure rest
+    const noteEl = doc.createElement("note");
+    const restEl = doc.createElement("rest");
+    restEl.setAttribute("measure", "yes");
+    noteEl.appendChild(restEl);
+    const durEl = doc.createElement("duration");
+    durEl.textContent = String(totalDuration);
+    noteEl.appendChild(durEl);
+    const typeEl = doc.createElement("type");
+    typeEl.textContent = "whole";
+    noteEl.appendChild(typeEl);
+    newMeasure.appendChild(noteEl);
+
+    refMeasure.parentNode?.insertBefore(newMeasure, refMeasure.nextSibling);
+
+    // Renumber all measures sequentially
+    Array.from(part.getElementsByTagName("measure"))
+      .forEach((m, i) => m.setAttribute("number", String(i + 1)));
+  }
+
+  return serializeXml(doc);
+}
+
+export function deleteMeasure(xml: string, localMeasureIdx: number): string {
+  const doc = parseXml(xml);
+  const parts = doc.getElementsByTagName("part");
+  const partEls = parts.length > 0 ? Array.from(parts) : [doc.documentElement];
+  for (const part of partEls) {
+    const measures = Array.from(part.getElementsByTagName("measure"));
+    if (measures.length <= 1) continue; // keep at least one measure per part
+    measures[localMeasureIdx]?.parentNode?.removeChild(measures[localMeasureIdx]);
+  }
+  return serializeXml(doc);
+}
+
+export function convertRestToNote(
+  xml: string,
+  measureIdx: number,
+  xmlNoteIdx: number,
+  step: string,
+  octave: number,
+  alter: number
+): string {
+  return insertNoteAtPosition(xml, measureIdx, xmlNoteIdx, step, octave, alter, null);
+}
+
+// Note-type → beats (in units of quarter notes). Dotted variants use "." suffix.
+const TYPE_BEATS: Record<string, number> = {
+  whole: 4, half: 2, "half.": 3, quarter: 1, "quarter.": 1.5,
+  eighth: 0.5, "eighth.": 0.75, sixteenth: 0.25,
+};
+
+// Decompose a type string into base type and dot flag
+function splitDotted(type: string): { base: string; dot: boolean } {
+  return type.endsWith(".") ? { base: type.slice(0, -1), dot: true } : { base: type, dot: false };
+}
+
+// Apply a note type (possibly dotted) to an existing note element, managing <type> and <dot>
+function applyNoteType(doc: Document, noteEl: Element, noteType: string): void {
+  const { base, dot } = splitDotted(noteType);
+  const typeEl = noteEl.getElementsByTagName("type")[0];
+  if (typeEl) typeEl.textContent = base;
+  const existingDot = noteEl.getElementsByTagName("dot")[0];
+  if (dot && !existingDot) {
+    const dotEl = doc.createElement("dot");
+    noteEl.insertBefore(dotEl, typeEl ? typeEl.nextSibling : null);
+  } else if (!dot && existingDot) {
+    noteEl.removeChild(existingDot);
+  }
+}
+
+function getDivisions(doc: Document, measureIdx: number): number {
+  const measures = doc.getElementsByTagName("measure");
+  for (let i = measureIdx; i >= 0; i--) {
+    const d = measures[i]?.getElementsByTagName("divisions")[0];
+    if (d) return parseInt(d.textContent ?? "1", 10) || 1;
+  }
+  return 1;
+}
+
+function buildPitchEl(doc: Document, step: string, octave: number, alter: number): Element {
+  const pitch = doc.createElement("pitch");
+  const stepEl = doc.createElement("step");
+  stepEl.textContent = step;
+  pitch.appendChild(stepEl);
+  if (alter !== 0) {
+    const alterEl = doc.createElement("alter");
+    alterEl.textContent = String(alter);
+    pitch.appendChild(alterEl);
+  }
+  const octaveEl = doc.createElement("octave");
+  octaveEl.textContent = String(octave);
+  pitch.appendChild(octaveEl);
+  return pitch;
+}
+
+function buildRestEl(doc: Document, durDivisions: number, divPerQ: number, staffEl: Element | null, voiceEl: Element | null): Element {
+  const note = doc.createElement("note");
+  const rest = doc.createElement("rest");
+  note.appendChild(rest);
+  const dur = doc.createElement("duration");
+  dur.textContent = String(durDivisions);
+  note.appendChild(dur);
+
+  const beats = durDivisions / divPerQ;
+  for (const [type, factor] of Object.entries(TYPE_BEATS)) {
+    if (type.endsWith(".")) continue; // base types handle dotted via the ×1.5 check below
+    if (Math.abs(beats - factor * 1.5) < 0.01) {
+      const typeEl = doc.createElement("type"); typeEl.textContent = type; note.appendChild(typeEl);
+      note.appendChild(doc.createElement("dot"));
+      break;
+    }
+    if (Math.abs(beats - factor) < 0.01) {
+      const typeEl = doc.createElement("type"); typeEl.textContent = type; note.appendChild(typeEl);
+      break;
+    }
+  }
+
+  if (voiceEl) note.appendChild(voiceEl.cloneNode(true));
+  if (staffEl) note.appendChild(staffEl.cloneNode(true));
+  return note;
+}
+
+// Insert a pitched note into an existing rest, splitting the rest if the chosen
+// noteType is shorter than the rest. Pass noteType=null to use the rest's own duration.
+export function insertNoteAtPosition(
+  xml: string,
+  measureIdx: number,
+  xmlNoteIdx: number,
+  step: string,
+  octave: number,
+  alter: number,
+  noteType: string | null
+): string {
+  const doc = parseXml(xml);
+  const measures = doc.getElementsByTagName("measure");
+  const measure = measures[measureIdx];
+  if (!measure) return xml;
+
+  const noteEl = Array.from(measure.getElementsByTagName("note"))[xmlNoteIdx];
+  if (!noteEl) return xml;
+
+  const restEl = noteEl.getElementsByTagName("rest")[0];
+  if (!restEl) return xml;
+
+  const divPerQ = getDivisions(doc, measureIdx);
+  const restDurEl = noteEl.getElementsByTagName("duration")[0];
+  const restDuration = parseInt(restDurEl?.textContent ?? "0", 10);
+
+  // Duration of new note in divisions
+  const targetBeats = noteType ? (TYPE_BEATS[noteType] ?? null) : null;
+  const noteDuration = targetBeats !== null
+    ? Math.round(targetBeats * divPerQ)
+    : restDuration;
+
+  if (noteDuration >= restDuration) {
+    // Fill entire rest — simple conversion
+    noteEl.removeChild(restEl);
+    noteEl.insertBefore(buildPitchEl(doc, step, octave, alter), noteEl.firstChild);
+    if (restDurEl) restDurEl.textContent = String(restDuration);
+    if (noteType) applyNoteType(doc, noteEl, noteType);
+    return serializeXml(doc);
+  }
+
+  // Partial fill — update the note element, then insert a trailing rest
+  noteEl.removeChild(restEl);
+  noteEl.insertBefore(buildPitchEl(doc, step, octave, alter), noteEl.firstChild);
+  if (restDurEl) restDurEl.textContent = String(noteDuration);
+  if (noteType) applyNoteType(doc, noteEl, noteType);
+
+  const staffEl = noteEl.getElementsByTagName("staff")[0] ?? null;
+  const voiceEl = noteEl.getElementsByTagName("voice")[0] ?? null;
+  const remaining = restDuration - noteDuration;
+  const trailingRest = buildRestEl(doc, remaining, divPerQ, staffEl, voiceEl);
+  noteEl.parentNode?.insertBefore(trailingRest, noteEl.nextSibling);
+
+  return serializeXml(doc);
+}
+
 
 export function deleteNote(xml: string, measureIdx: number, xmlNoteIdx: number): string {
   const doc = parseXml(xml);
@@ -313,9 +527,9 @@ export function addChordNote(
   return serializeXml(doc);
 }
 
-// Quarter = 1× divisions; whole = 4×; half = 2×; eighth = 0.5×; etc.
+// Same map as TYPE_BEATS, aliased for clarity in the duration-change context.
 const TYPE_MULTIPLIER: Record<string, number> = {
-  whole: 4, half: 2, quarter: 1, eighth: 0.5, sixteenth: 0.25, "32nd": 0.125,
+  ...TYPE_BEATS, "32nd": 0.125,
 };
 
 export function updateNoteDuration(
@@ -330,7 +544,6 @@ export function updateNoteDuration(
   const doc = parseXml(xml);
   const measures = doc.getElementsByTagName("measure");
 
-  // Find the nearest <divisions> value at or before this measure
   let divisions = 1;
   for (let i = measureIdx; i >= 0; i--) {
     const divEl = measures[i]?.getElementsByTagName("divisions")[0];
@@ -343,8 +556,7 @@ export function updateNoteDuration(
   const noteEl = measure.getElementsByTagName("note")[xmlNoteIdx];
   if (!noteEl) return xml;
 
-  const typeEl = noteEl.getElementsByTagName("type")[0];
-  if (typeEl) typeEl.textContent = newType;
+  applyNoteType(doc, noteEl, newType);
 
   const durationEl = noteEl.getElementsByTagName("duration")[0];
   if (durationEl) durationEl.textContent = String(Math.round(divisions * multiplier));

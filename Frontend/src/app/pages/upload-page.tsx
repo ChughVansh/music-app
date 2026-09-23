@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
-import { Upload, FileMusic, AlertCircle, LogIn, Camera, GripVertical, ZoomIn, X, Crop, RotateCcw, RotateCw } from "lucide-react";
+import { Upload, FileMusic, AlertCircle, LogIn, Camera, GripVertical, ZoomIn, X, Crop, RotateCcw, RotateCw, Plus } from "lucide-react";
+import { toast } from "sonner";
 import { useNavigate } from "react-router";
 import { Navbar } from "../components/navbar";
 import { motion } from "motion/react";
@@ -31,11 +32,15 @@ export function UploadPage() {
   const [cropStart, setCropStart] = useState<{ x: number; y: number } | null>(null);
   const [cropEnd, setCropEnd] = useState<{ x: number; y: number } | null>(null);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const [pendingNavigation, setPendingNavigation] = useState<{
+    musicXml: string; fileName: string; scoreType: string; sessionId: string;
+  } | null>(null);
   const pendingFile = useRef<File[]>([]);
   const pendingScoreType = useRef<"classical" | "jazz">("classical");
   const fileDragIndex = useRef<number | null>(null);
   const dragCounterRef = useRef(0);
   const cropImgRef = useRef<HTMLImageElement>(null);
+  const addMoreInputRef = useRef<HTMLInputElement>(null);
   const cropDragging = useRef(false);
   const navigate = useNavigate();
   const [showCamera, setShowCamera] = useState(false);
@@ -90,18 +95,20 @@ export function UploadPage() {
     const interval = setInterval(() => {
       if (!document.hasFocus() || document.hidden) return;
       setAdCountdown((n) => {
-        if (n <= 1) {
-          clearInterval(interval);
-          setShowAd(false);
-          if (pendingFile.current.length > 0)
-            runUpload(pendingFile.current, pendingScoreType.current);
-          return 0;
-        }
+        if (n <= 1) { clearInterval(interval); setShowAd(false); return 0; }
         return n - 1;
       });
     }, 1000);
     return () => clearInterval(interval);
   }, [showAd]);
+
+  // Navigate once upload is done AND the 30s ad has finished.
+  // If upload finishes first, pendingNavigation is set and we wait here.
+  // If the ad finishes first, this effect fires immediately when upload sets pendingNavigation.
+  useEffect(() => {
+    if (!pendingNavigation || showAd) return;
+    navigate("/editor", { state: pendingNavigation });
+  }, [pendingNavigation, showAd]);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -114,7 +121,10 @@ export function UploadPage() {
     e.preventDefault();
     setIsDragging(false);
     const files = e.dataTransfer.files;
-    if (files.length > 0) handleFilesUpload(Array.from(files));
+    if (files.length > 0) {
+      if (showOrderReview) handleAppendFiles(Array.from(files));
+      else handleFilesUpload(Array.from(files));
+    }
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -127,6 +137,8 @@ export function UploadPage() {
 
   const handleFilesUpload = (files: File[]) => {
     setError(null);
+    setShowTypePicker(false);
+    setSelectedType(null);
     const invalid = files.find((f) => !ACCEPTED_TYPES.includes(f.type));
     if (invalid) {
       setError(`"${invalid.name}" is not a supported format. Use PNG, JPG, or PDF.`);
@@ -144,6 +156,32 @@ export function UploadPage() {
     setOrderPreviewUrls(previews);
     pendingFile.current = [...files];
     setShowOrderReview(true);
+  };
+
+  const handleAppendFiles = (files: File[]) => {
+    const invalid = files.find((f) => !ACCEPTED_TYPES.includes(f.type));
+    if (invalid) { toast.error(`"${invalid.name}" is not a supported format. Use PNG, JPG, or PDF.`); return; }
+    const tooBig = files.find((f) => f.size > MAX_SIZE_MB * 1024 * 1024);
+    if (tooBig) { toast.error(`"${tooBig.name}" is too large — max 10 MB per file.`); return; }
+    const newPreviews = files.map((f) => f.type !== "application/pdf" ? URL.createObjectURL(f) : "");
+    setOrderedFiles((prev) => [...prev, ...files]);
+    setOrderPreviewUrls((prev) => [...prev, ...newPreviews]);
+    pendingFile.current = [...pendingFile.current, ...files];
+  };
+
+  const handleRemoveFile = (index: number) => {
+    const newFiles = orderedFiles.filter((_, i) => i !== index);
+    const newPreviews = orderPreviewUrls.filter((_, i) => i !== index);
+    if (newFiles.length === 0) {
+      setShowOrderReview(false);
+      setOrderedFiles([]);
+      setOrderPreviewUrls([]);
+      pendingFile.current = [];
+      return;
+    }
+    setOrderedFiles(newFiles);
+    setOrderPreviewUrls(newPreviews);
+    pendingFile.current = newFiles;
   };
 
   const confirmOrder = () => {
@@ -175,7 +213,14 @@ export function UploadPage() {
   const handleFileDrop = (e: React.DragEvent, index: number) => {
     e.preventDefault();
     e.stopPropagation();
-    if (fileDragIndex.current === null) { setDragOverIndex(null); setDraggingIndex(null); return; }
+    if (fileDragIndex.current === null) {
+      // External files dropped on a list item — append to existing set
+      const files = e.dataTransfer.files;
+      if (files.length > 0) handleAppendFiles(Array.from(files));
+      setDragOverIndex(null);
+      setDraggingIndex(null);
+      return;
+    }
     let insertAt = getInsertPosition(e, index);
     const from = fileDragIndex.current;
     if (from < insertAt) insertAt--;
@@ -335,7 +380,8 @@ export function UploadPage() {
       setStage("converting");
       await new Promise((r) => setTimeout(r, 800));
       if (previewUrl) URL.revokeObjectURL(previewUrl);
-      navigate("/editor", { state: { musicXml, fileName: files[0].name, scoreType, sessionId } });
+      // Don't navigate yet — wait for the ad countdown to finish first (if still running).
+      setPendingNavigation({ musicXml, fileName: files[0].name, scoreType, sessionId });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
       setProcessing(false);
@@ -346,6 +392,7 @@ export function UploadPage() {
     setError(null);
     setProcessing(false);
     setShowAd(false);
+    setPendingNavigation(null);
     setShowTypePicker(false);
     setShowOrderReview(false);
     setSelectedType(null);
@@ -449,10 +496,17 @@ export function UploadPage() {
                       >
                         Preview
                       </h2>
-                      <p className="text-center text-[#1C1917]/60 text-sm mb-5">
-                        {orderedFiles[0].name}
-                      </p>
-                      <div className="flex justify-center mb-6">
+                      <div className="flex items-center justify-center gap-2 mb-5">
+                        <p className="text-[#1C1917]/60 text-sm truncate max-w-[220px]">{orderedFiles[0].name}</p>
+                        <button
+                          onClick={() => handleRemoveFile(0)}
+                          className="w-5 h-5 rounded-full bg-[#F2C4C4] border border-[#1C1917]/20 flex items-center justify-center hover:bg-red-200 transition-colors flex-shrink-0"
+                          title="Remove file"
+                        >
+                          <X className="w-3 h-3 text-[#1C1917]" />
+                        </button>
+                      </div>
+                      <div className="flex justify-center mb-4">
                         {orderPreviewUrls[0] ? (
                           <button
                             onClick={() => { setLightboxIndex(0); setCropMode(false); setCropStart(null); setCropEnd(null); }}
@@ -489,7 +543,7 @@ export function UploadPage() {
                       <p className="text-center text-[#1C1917]/60 text-sm mb-6">
                         Drag to reorder · {orderedFiles.length} pages
                       </p>
-                      <div className="mb-6 max-h-72 overflow-y-auto pr-1">
+                      <div className="mb-3 max-h-72 overflow-y-auto pr-1">
                         <div className={`h-[3px] rounded-full mx-1 mb-1 bg-[#7FFFD4] transition-opacity duration-100 ${dragOverIndex === 0 ? "opacity-100" : "opacity-0"}`} />
                         {orderedFiles.map((file, i) => (
                           <div key={`${file.name}-${file.size}-${i}`}>
@@ -526,6 +580,14 @@ export function UploadPage() {
                                 </div>
                               )}
                               <span className="text-sm text-[#1C1917] truncate flex-1">{file.name}</span>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); handleRemoveFile(i); }}
+                                draggable={false}
+                                className="w-6 h-6 rounded-full bg-[#F5F0E8] border border-[#1C1917]/20 flex items-center justify-center hover:bg-[#F2C4C4] transition-colors flex-shrink-0 cursor-pointer"
+                                title="Remove"
+                              >
+                                <X className="w-3 h-3 text-[#1C1917]/60" />
+                              </button>
                             </div>
                             <div className={`h-[3px] rounded-full mx-1 mb-1 bg-[#7FFFD4] transition-opacity duration-100 ${dragOverIndex === i + 1 ? "opacity-100" : "opacity-0"}`} />
                           </div>
@@ -533,6 +595,25 @@ export function UploadPage() {
                       </div>
                     </>
                   )}
+                  {/* Always-visible input + add more button */}
+                  <input
+                    ref={addMoreInputRef}
+                    type="file"
+                    multiple
+                    accept=".png,.jpg,.jpeg,.pdf"
+                    className="hidden"
+                    onChange={(e) => {
+                      const files = e.target.files;
+                      if (files && files.length > 0) handleAppendFiles(Array.from(files));
+                      e.target.value = "";
+                    }}
+                  />
+                  <button
+                    onClick={() => addMoreInputRef.current?.click()}
+                    className="w-full mt-3 mb-3 py-2 rounded-xl border-2 border-dashed border-[#1C1917]/30 text-sm text-[#1C1917]/50 hover:border-[#1C1917]/60 hover:text-[#1C1917]/70 hover:bg-[#F5F0E8]/60 transition-all flex items-center justify-center gap-2"
+                  >
+                    <Plus className="w-4 h-4" /> Add more files
+                  </button>
                   <button
                     onClick={confirmOrder}
                     className="w-full py-3 bg-[#7FFFD4] border-2 border-[#1C1917] rounded-full font-medium hover:translate-y-[-2px] transition-all shadow-[4px_4px_0_#1C1917] hover:shadow-[6px_6px_0_#1C1917]"
@@ -566,6 +647,7 @@ export function UploadPage() {
                         setSelectedType("classical");
                         pendingScoreType.current = "classical";
                         setShowTypePicker(false);
+                        setShowAd(true);
                         runUpload(pendingFile.current, "classical", "legato");
                       }}
                       className={`relative p-8 rounded-2xl border-2 transition-all text-left overflow-hidden
@@ -599,6 +681,7 @@ export function UploadPage() {
                         setSelectedType("jazz");
                         pendingScoreType.current = "jazz";
                         setShowTypePicker(false);
+                        setShowAd(true);
                         runUpload(pendingFile.current, "jazz");
                       }}
                       className={`relative p-8 rounded-2xl border-2 transition-all text-left overflow-hidden
@@ -637,47 +720,6 @@ export function UploadPage() {
                   </button>
                 </div>
 
-              ) : showAd ? (
-                <div className="text-center relative z-10">
-                  <div className="w-24 h-24 bg-muted rounded-full flex items-center justify-center mx-auto mb-6 relative">
-                    <svg
-                      className="absolute inset-0 w-full h-full -rotate-90"
-                      viewBox="0 0 96 96"
-                    >
-                      <circle
-                        cx="48" cy="48" r="44"
-                        fill="none" stroke="currentColor" strokeWidth="4"
-                        className="text-border"
-                      />
-                      <motion.circle
-                        cx="48" cy="48" r="44"
-                        fill="none" stroke="currentColor" strokeWidth="4"
-                        strokeDasharray={2 * Math.PI * 44}
-                        strokeDashoffset={
-                          2 * Math.PI * 44 * (adCountdown / AD_DURATION)
-                        }
-                        className="text-[#7FFFD4]"
-                        style={{ transition: "stroke-dashoffset 1s linear" }}
-                      />
-                    </svg>
-                    <span className="text-2xl font-bold text-[#1C1917]">
-                      {adCountdown}
-                    </span>
-                  </div>
-                  <h2 className="text-2xl font-semibold text-[#1C1917] mb-2">
-                    A word from our sponsors
-                  </h2>
-                  <p className="text-[#1C1917]/60 mb-6 text-sm">
-                    Your upload starts in {adCountdown} second
-                    {adCountdown !== 1 ? "s" : ""}
-                  </p>
-                  <div className="w-full max-w-md mx-auto h-32 bg-[#F5F0E8] border-2 border-[#1C1917] rounded-xl flex items-center justify-center shadow-[4px_4px_0_#1C1917]">
-                    <span className="text-[#1C1917]/40 text-sm tracking-widest uppercase">
-                      [ Ad Placeholder ]
-                    </span>
-                  </div>
-                </div>
-
               ) : error ? (
                 <div className="text-center relative z-10">
                   <div className="w-24 h-24 bg-red-50 rounded-full flex items-center justify-center mx-auto mb-6">
@@ -686,6 +728,8 @@ export function UploadPage() {
                   <h2 className="text-2xl font-semibold text-[#1C1917] mb-3">
                     {error.includes("sign in")
                       ? "Sign In Required"
+                      : error.includes("not a supported") || error.includes("exceeds") || error.includes("too large")
+                      ? "Unsupported File"
                       : "Processing Failed"}
                   </h2>
                   <p className="text-[#1C1917]/60 mb-6 max-w-md mx-auto text-sm">
@@ -721,7 +765,8 @@ export function UploadPage() {
                 </div>
 
               ) : processing ? (
-                <div className="flex flex-col md:flex-row gap-8 items-center justify-center relative z-10">
+                <div className="flex flex-col gap-6 relative z-10">
+                  <div className="flex flex-col md:flex-row gap-8 items-center justify-center">
                   {previewUrl && (
                     <div className="flex-shrink-0">
                       <img
@@ -810,6 +855,13 @@ export function UploadPage() {
                       This usually takes 3–5 minutes. Please keep this tab open.
                     </p>
                   </div>
+                  </div>
+                  {/* Ad placeholder */}
+                  <div className="w-full rounded-xl border-2 border-dashed border-[#1C1917]/20 bg-[#F5F0E8]/50 py-8 flex items-center justify-center">
+                    <span className="text-sm text-[#1C1917]/30 font-medium tracking-widest uppercase select-none">
+                      Ad Placeholder
+                    </span>
+                  </div>
                 </div>
 
               ) : (
@@ -854,6 +906,7 @@ export function UploadPage() {
               )}
             </div>
           </motion.div>
+
 
           {/* Load MusicXML shortcut */}
           {!processing && !error && !showOrderReview && !showTypePicker && (
