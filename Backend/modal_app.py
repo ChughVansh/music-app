@@ -355,7 +355,7 @@ def _run_jazzmus(image_path: Path) -> str:
 
 def _kern_to_musicxml(full_kern: str) -> str:
     """Convert jazzmus **kern + **mxhm output to MusicXML string."""
-    from music21 import stream, harmony as m21harmony, converter
+    from music21 import stream, harmony as m21harmony, converter, clef, meter, key
 
     def parse_mxhm_chord(token: str):
         if not token or token in ('.', '*') or token.startswith('*') or token.startswith('='):
@@ -421,6 +421,7 @@ def _kern_to_musicxml(full_kern: str) -> str:
     combined_score.insert(0, combined_part)
     current_offset = 0.0
 
+    first_section = True
     for section_text in sections:
         score, chords_by_line, note_line_indices = parse_section(section_text)
         if not score.parts:
@@ -428,8 +429,15 @@ def _kern_to_musicxml(full_kern: str) -> str:
         part = score.parts[0]
         flat_notes = list(score.flatten().notesAndRests)
 
+        # Only keep clef/time/key signature from the first section; later ones
+        # redeclare per kern syntax but would show up as spurious mid-piece symbols.
         for m in part.getElementsByClass('Measure'):
-            combined_part.insert(current_offset + m.offset, copy.deepcopy(m))
+            m_copy = copy.deepcopy(m)
+            if not first_section:
+                for el in list(m_copy.getElementsByClass((clef.Clef, meter.TimeSignature, key.KeySignature))):
+                    m_copy.remove(el)
+            combined_part.insert(current_offset + m.offset, m_copy)
+        first_section = False
 
         for line_idx, cs in chords_by_line.items():
             try:
