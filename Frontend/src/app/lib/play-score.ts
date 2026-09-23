@@ -3,6 +3,10 @@ interface PlayNote {
   startSec: number;
   durationSec: number;
   isChord: boolean;
+  /** Tied continuation of the previous note: occupies a timeline slot (for cursor
+   *  alignment) but shouldn't trigger a new attack — the previous note's sound
+   *  is extended to cover it instead. */
+  silent?: boolean;
 }
 
 const CHORD_INTERVALS: Record<string, number[]> = {
@@ -45,6 +49,9 @@ function parseForPlayback(
     let measureStartSec = 0;
     let divisions = 1;
     let currentBpm = bpmOverride ?? baseBpm;
+    // Tracks the note that currently "owns" the sounding oscillator, so a chain
+    // of tied notes (a-tied-to-b-tied-to-c) all extend the same original attack.
+    let lastSoundingMelodyNote: PlayNote | null = null;
 
     for (const measure of Array.from(part.getElementsByTagName("measure"))) {
       const divEl = measure.getElementsByTagName("divisions")[0];
@@ -83,12 +90,29 @@ function parseForPlayback(
               const step = pitchEl.getElementsByTagName("step")[0]?.textContent?.trim() ?? "C";
               const octave = parseInt(pitchEl.getElementsByTagName("octave")[0]?.textContent ?? "4", 10);
               const alter = parseFloat(pitchEl.getElementsByTagName("alter")[0]?.textContent ?? "0");
-              melodyNotes.push({
-                frequency: noteToFrequency(step, octave, alter),
-                startSec,
-                durationSec: durSec * 0.9,
-                isChord: false,
-              });
+              const tieStop = Array.from(child.getElementsByTagName("tie")).some(
+                (t) => t.getAttribute("type") === "stop"
+              );
+              if (tieStop && lastSoundingMelodyNote) {
+                // Extend the original attack's sustain instead of re-triggering.
+                lastSoundingMelodyNote.durationSec += durSec * 0.9;
+                melodyNotes.push({
+                  frequency: noteToFrequency(step, octave, alter),
+                  startSec,
+                  durationSec: 0,
+                  isChord: false,
+                  silent: true,
+                });
+              } else {
+                const newNote: PlayNote = {
+                  frequency: noteToFrequency(step, octave, alter),
+                  startSec,
+                  durationSec: durSec * 0.9,
+                  isChord: false,
+                };
+                melodyNotes.push(newNote);
+                lastSoundingMelodyNote = newNote;
+              }
             }
           }
 
@@ -225,6 +249,10 @@ export class ScorePlayer {
     this.nodes = [];
 
     for (const note of this.notes) {
+      // Tied continuation: the sustain was already folded into the originating
+      // note's duration, so schedule no separate attack for this slot.
+      if (note.silent) continue;
+
       const noteEnd = note.startSec + note.durationSec;
       // Skip notes that fully ended before the resume point
       if (noteEnd < this.pauseOffset - 0.01) continue;
