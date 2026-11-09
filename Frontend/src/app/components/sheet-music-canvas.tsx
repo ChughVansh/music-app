@@ -3,6 +3,8 @@ import { OpenSheetMusicDisplay } from "opensheetmusicdisplay";
 import { parseMusicXml, applyDiatonicStep } from "../lib/parse-musicxml";
 import type { ParsedNote, ParsedHarmony } from "../lib/parse-musicxml";
 
+const MEASURES_PER_LINE = 4;
+
 const ACCENT = "#E8622A";
 
 // Regex to identify chord symbol text elements in OSMD's SVG output
@@ -33,6 +35,10 @@ interface DragState {
 
 export interface SheetMusicCanvasHandle {
   getOsmdDiv: () => HTMLDivElement | null;
+  /** SVG markup with the on-screen selection highlight removed (for print/export). */
+  getCleanSvgHtml: () => string;
+  /** Viewport coordinates of a note's notehead, or null if it isn't rendered. */
+  getNoteClientPos: (note: ParsedNote) => { x: number; y: number } | null;
 }
 
 interface Props {
@@ -439,6 +445,25 @@ export const SheetMusicCanvas = forwardRef<SheetMusicCanvasHandle, Props>(functi
 
   useImperativeHandle(ref, () => ({
     getOsmdDiv: () => osmdDivRef.current,
+    getNoteClientPos: (note) => {
+      const hit = noteHits.find((h) => h.note.measure === note.measure && h.note.xmlIndex === note.xmlIndex);
+      const rect = wrapperRef.current?.getBoundingClientRect();
+      if (!hit || !rect) return null;
+      return { x: rect.left + hit.x, y: rect.top + hit.y - 2.5 * hit.lineSpacingPx };
+    },
+    getCleanSvgHtml: () => {
+      const div = osmdDivRef.current;
+      if (!div) return "";
+      const clone = div.cloneNode(true) as HTMLDivElement;
+      const probe = document.createElement("span");
+      probe.style.color = ACCENT;
+      const accentRgb = probe.style.color; // browser-normalised, e.g. "rgb(232, 98, 42)"
+      clone.querySelectorAll<SVGElement>("[style]").forEach((el) => {
+        if (el.style.fill === accentRgb) el.style.removeProperty("fill");
+        if (el.style.stroke === accentRgb) el.style.removeProperty("stroke");
+      });
+      return clone.innerHTML;
+    },
   }));
   const [noteHits, setNoteHits] = useState<NoteHit[]>([]);
   const [chordHits, setChordHits] = useState<ChordHit[]>([]);
@@ -495,6 +520,10 @@ export const SheetMusicCanvas = forwardRef<SheetMusicCanvasHandle, Props>(functi
         pageBackgroundColor: "#ffffff",
       } as any);
       osmdRef.current = osmd;
+      // Always 4 bars per line, ignoring system breaks baked into the XML.
+      osmd.EngravingRules.RenderXMeasuresPerLineAkaSystem = MEASURES_PER_LINE;
+      osmd.EngravingRules.NewSystemAtXMLNewSystemAttribute = false;
+      osmd.EngravingRules.NewSystemAtXMLNewPageAttribute = false;
       await osmd.load(musicXml);
       osmd.render();
       requestAnimationFrame(() => requestAnimationFrame(rebuild));

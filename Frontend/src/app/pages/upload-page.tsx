@@ -89,26 +89,32 @@ export function UploadPage() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!showAd) return;
-    setAdCountdown(AD_DURATION);
-    const interval = setInterval(() => {
-      if (!document.hasFocus() || document.hidden) return;
-      setAdCountdown((n) => {
-        if (n <= 1) { clearInterval(interval); setShowAd(false); return 0; }
-        return n - 1;
-      });
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [showAd]);
+  // Ad countdown mechanism disabled (2026-10-09)
+  // useEffect(() => {
+  //   if (!showAd) return;
+  //   setAdCountdown(AD_DURATION);
+  //   const interval = setInterval(() => {
+  //     if (!document.hasFocus() || document.hidden) return;
+  //     setAdCountdown((n) => {
+  //       if (n <= 1) { clearInterval(interval); setShowAd(false); return 0; }
+  //       return n - 1;
+  //     });
+  //   }, 1000);
+  //   return () => clearInterval(interval);
+  // }, [showAd]);
 
-  // Navigate once upload is done AND the 30s ad has finished.
-  // If upload finishes first, pendingNavigation is set and we wait here.
-  // If the ad finishes first, this effect fires immediately when upload sets pendingNavigation.
+  // Navigate as soon as upload is done — no longer gated on the ad countdown.
   useEffect(() => {
-    if (!pendingNavigation || showAd) return;
+    if (!pendingNavigation) return;
     navigate("/editor", { state: pendingNavigation });
-  }, [pendingNavigation, showAd]);
+  }, [pendingNavigation]);
+  // Original ad-gated version — navigated only once upload was done AND the
+  // 30s ad had finished. Restore this (and the countdown effect above) to
+  // bring the ad wait back.
+  // useEffect(() => {
+  //   if (!pendingNavigation || showAd) return;
+  //   navigate("/editor", { state: pendingNavigation });
+  // }, [pendingNavigation, showAd]);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -647,7 +653,7 @@ export function UploadPage() {
                         setSelectedType("classical");
                         pendingScoreType.current = "classical";
                         setShowTypePicker(false);
-                        setShowAd(true);
+                        // setShowAd(true); // ad mechanism disabled (2026-10-09)
                         runUpload(pendingFile.current, "classical", "legato");
                       }}
                       className={`relative p-8 rounded-2xl border-2 transition-all text-left overflow-hidden
@@ -681,7 +687,7 @@ export function UploadPage() {
                         setSelectedType("jazz");
                         pendingScoreType.current = "jazz";
                         setShowTypePicker(false);
-                        setShowAd(true);
+                        // setShowAd(true); // ad mechanism disabled (2026-10-09)
                         runUpload(pendingFile.current, "jazz");
                       }}
                       className={`relative p-8 rounded-2xl border-2 transition-all text-left overflow-hidden
@@ -852,16 +858,17 @@ export function UploadPage() {
                       }
                     )}
                     <p className="text-xs text-[#1C1917]/40 mt-2">
-                      This usually takes 3–5 minutes. Please keep this tab open.
+                      This usually takes about 20 seconds. Please keep this tab open.
                     </p>
                   </div>
                   </div>
-                  {/* Ad placeholder */}
+                  {/* Ad placeholder — disabled (2026-10-09)
                   <div className="w-full rounded-xl border-2 border-dashed border-[#1C1917]/20 bg-[#F5F0E8]/50 py-8 flex items-center justify-center">
                     <span className="text-sm text-[#1C1917]/30 font-medium tracking-widest uppercase select-none">
                       Ad Placeholder
                     </span>
                   </div>
+                  */}
                 </div>
 
               ) : (
@@ -960,7 +967,7 @@ export function UploadPage() {
                 </li>
                 <li className="flex items-start gap-2">
                   <span>♪</span>
-                  <span>Keep your camera parallel to the page — no angled shots</span>
+                  <span>Keep your camera parallel to the page</span>
                 </li>
                 <li className="flex items-start gap-2">
                   <span>♪</span>

@@ -106,7 +106,7 @@ export function LandingPage() {
                 </h1>
 
                 <p className="text-base sm:text-xl text-[#1C1917]/80 mb-3 leading-relaxed">
-                  Turn any sheet music into an editable digital score —
+                  Turn any sheet music into an editable digital score
                   instantly. Photograph, upload, and export to MuseScore, PDF,
                   and more.
                 </p>

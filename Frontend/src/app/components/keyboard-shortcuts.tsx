@@ -7,16 +7,23 @@ export function KeyboardShortcuts() {
 
   const shortcuts = [
     { key: "Space", action: "Play / Pause" },
-    { key: "←/→", action: "Navigate measures" },
-    { key: "Cmd/Ctrl + Z", action: "Undo" },
-    { key: "Cmd/Ctrl + Shift + Z", action: "Redo" },
+    { key: "← / →", action: "Previous / next note" },
+    { key: "Ctrl + ← / →", action: "Previous / next measure" },
+    { key: "Shift + ← / →", action: "Extend / shrink selection" },
+    { key: "Home / End", action: "First / last note" },
+    { key: "↑ / ↓", action: "Raise / lower by semitone" },
+    { key: "Ctrl + ↑ / ↓", action: "Raise / lower by octave" },
+    { key: "A – G", action: "Set pitch name" },
+    { key: "Shift + A – G", action: "Add note to chord" },
+    { key: "3 4 5 6 7", action: "16th / 8th / quarter / half / whole" },
+    { key: ".", action: "Toggle dotted duration" },
     { key: "Delete", action: "Delete selected notes" },
-    { key: "L", action: "Toggle loop" },
-    { key: "P", action: "Toggle practice mode" },
-    { key: "V", action: "Select tool" },
-    { key: "E", action: "Edit tool" },
-    { key: "R", action: "Erase tool" },
-    { key: "+/-", action: "Adjust tempo" },
+    { key: "Ctrl + B", action: "Insert measure" },
+    { key: "Ctrl + Delete", action: "Delete measure" },
+    { key: "Ctrl + K", action: "Add / edit chord symbol" },
+    { key: "Ctrl + Z", action: "Undo" },
+    { key: "Ctrl + Shift + Z / Ctrl + Y", action: "Redo" },
+    { key: "Ctrl + S", action: "Save to library" },
   ];
 
   return (
@@ -46,7 +53,7 @@ export function KeyboardShortcuts() {
               initial={{ opacity: 0, scale: 0.95, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-md bg-card border border-border rounded-2xl shadow-2xl z-50 overflow-hidden"
+              className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-lg bg-card border border-border rounded-2xl shadow-2xl z-50 overflow-hidden"
             >
               <div className="flex items-center justify-between p-6 border-b border-border">
                 <h2 className="text-xl font-semibold">Keyboard Shortcuts</h2>
@@ -66,7 +73,7 @@ export function KeyboardShortcuts() {
                       className="flex items-center justify-between py-2 border-b border-border/50 last:border-0"
                     >
                       <span className="text-sm text-muted-foreground">{shortcut.action}</span>
-                      <kbd className="px-3 py-1.5 bg-muted text-foreground rounded-md text-xs font-mono border border-border">
+                      <kbd className="ml-3 shrink-0 px-3 py-1.5 bg-muted text-foreground rounded-md text-xs font-mono border border-border">
                         {shortcut.key}
                       </kbd>
                     </div>

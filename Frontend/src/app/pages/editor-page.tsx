@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { ArrowLeft, Download, FileDown, RotateCcw, RotateCw, ChevronLeft, ChevronRight, BookmarkPlus, Loader2, Play, Pause, Square, RefreshCw, Trash2, Plus } from "lucide-react";
+import { ArrowLeft, Download, FileDown, RotateCcw, RotateCw, ChevronLeft, ChevronRight, BookmarkPlus, Loader2, Play, Pause, Square, RefreshCw, Trash2, Plus, Music2 } from "lucide-react";
 import { ScorePlayer } from "../lib/play-score";
 import { Link, useLocation, useNavigate } from "react-router";
 import { toast } from "sonner";
 import { SheetMusicCanvas } from "../components/sheet-music-canvas";
 import type { SheetMusicCanvasHandle } from "../components/sheet-music-canvas";
+import { KeyboardShortcuts } from "../components/keyboard-shortcuts";
 import { EditorSidebar } from "../components/editor-sidebar";
 import { PropertiesPanel } from "../components/properties-panel";
 import {
@@ -20,6 +21,9 @@ import {
   addChordNote,
   parseHarmonies,
   updateHarmony,
+  getHarmonyAtNote,
+  setHarmonyAtNote,
+  deleteHarmony,
   validateChordLabel,
   updateComposerInXml,
 } from "../lib/parse-musicxml";
@@ -37,6 +41,32 @@ function updateTitleInXml(xml: string, title: string): string {
   if (/<work-title>/.test(xml))
     return xml.replace(/<work-title>[^<]*<\/work-title>/, `<work-title>${escaped}</work-title>`);
   return xml.replace(/(<score-partwise[^>]*>)/, `$1\n  <movement-title>${escaped}</movement-title>`);
+}
+
+const DURATION_KEYS: Record<string, string> = { "3": "sixteenth", "4": "eighth", "5": "quarter", "6": "half", "7": "whole" };
+
+const SHARP_SPELL: [string, number][] = [["C",0],["C",1],["D",0],["D",1],["E",0],["F",0],["F",1],["G",0],["G",1],["A",0],["A",1],["B",0]];
+const FLAT_SPELL: [string, number][] = [["C",0],["D",-1],["D",0],["E",-1],["E",0],["F",0],["G",-1],["G",0],["A",-1],["A",0],["B",-1],["B",0]];
+const STEP_PC: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+
+// MuseScore-style: Up spells with sharps, Down spells with flats.
+function shiftSemitone(step: string, octave: number, alter: number, delta: number) {
+  const midi = (octave + 1) * 12 + (STEP_PC[step] ?? 0) + alter + delta;
+  const pc = ((midi % 12) + 12) % 12;
+  const [s, a] = (delta > 0 ? SHARP_SPELL : FLAT_SPELL)[pc];
+  return { step: s, alter: a, octave: Math.floor(midi / 12) - 1 };
+}
+
+// Octave for `target` step that lies closest to the current note.
+function nearestOctave(curStep: string, curOctave: number, target: string): number {
+  const cur = curOctave * 7 + ["C","D","E","F","G","A","B"].indexOf(curStep);
+  const t = ["C","D","E","F","G","A","B"].indexOf(target);
+  let best = curOctave, bestDist = Infinity;
+  for (const o of [curOctave - 1, curOctave, curOctave + 1]) {
+    const d = Math.abs(o * 7 + t - cur);
+    if (d < bestDist) { best = o; bestDist = d; }
+  }
+  return best;
 }
 
 function parseScore(xml: string): { notes: ParsedNote[]; info: ScoreInfo | null } {
@@ -64,7 +94,7 @@ export function EditorPage() {
   const [bpmDraft, setBpmDraft] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
-  const [chordPopup, setChordPopup] = useState<{ harmony: ParsedHarmony; clientX: number; clientY: number; value: string } | null>(null);
+  const [chordPopup, setChordPopup] = useState<{ harmony: ParsedHarmony | null; note?: ParsedNote; clientX: number; clientY: number; value: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const [savedId, setSavedId] = useState<string | null>(null);
 
@@ -139,25 +169,105 @@ export function EditorPage() {
     setExtraSelected([]);
   }, []);
 
+  // MuseScore-style shortcuts.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement).tagName === "BUTTON") return;
-      if ((e.target as HTMLElement).tagName === "INPUT") return;
-      if (e.key === "ArrowRight") { e.preventDefault(); moveNext(); }
-      else if (e.key === "ArrowLeft") { e.preventDefault(); movePrev(); }
-      else if (e.key === "ArrowUp") {
-        const targets = [cursorStep, ...extraSelected].map((i) => cursorNotes[i]).filter((n): n is ParsedNote => !!n && !n.isRest);
-        if (targets.length > 0) { e.preventDefault(); changePitchMulti(targets, 1); }
-      } else if (e.key === "ArrowDown") {
-        const targets = [cursorStep, ...extraSelected].map((i) => cursorNotes[i]).filter((n): n is ParsedNote => !!n && !n.isRest);
-        if (targets.length > 0) { e.preventDefault(); changePitchMulti(targets, -1); }
-      } else if (e.key === "Delete" && cursorNote) { e.preventDefault(); handleDelete(cursorNote); }
-      else if (e.key === "z" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); handleUndo(); }
-      else if (e.key === "y" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); handleRedo(); }
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      const mod = e.ctrlKey || e.metaKey;
+      const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+      const targets = [cursorStep, ...extraSelected]
+        .map((i) => cursorNotes[i])
+        .filter((n): n is ParsedNote => !!n && !n.isRest);
+
+      // Space = play/pause (let focused buttons keep their native Space behaviour)
+      if (key === " " && tag !== "BUTTON") { e.preventDefault(); handlePlayPause(); return; }
+      if (tag === "BUTTON") return;
+
+      // Undo / redo / save
+      if (mod && key === "z") { e.preventDefault(); e.shiftKey ? handleRedo() : handleUndo(); return; }
+      if (mod && key === "y") { e.preventDefault(); handleRedo(); return; }
+      if (mod && key === "s") { e.preventDefault(); handleSaveToLibrary(); return; }
+
+      // Measures: Ctrl+Left/Right jump a bar, Ctrl+B insert bar, Ctrl+Delete delete bar
+      if (mod && (key === "ArrowRight" || key === "ArrowLeft")) {
+        e.preventDefault();
+        const dir = key === "ArrowRight" ? 1 : -1;
+        if (!cursorNote) return;
+        const target = cursorNotes.findIndex((n) => n.partIndex === cursorNote.partIndex && n.localMeasure === cursorNote.localMeasure + dir);
+        if (target !== -1) { setCursorStep(target); setExtraSelected([]); }
+        return;
+      }
+      if (mod && key === "k") { e.preventDefault(); if (cursorNote) openChordForNote(cursorNote); return; }
+      if (mod && key === "b") { e.preventDefault(); handleAddMeasure(); return; }
+      if (mod && (key === "Delete" || key === "Backspace")) { e.preventDefault(); handleDeleteMeasure(); return; }
+
+      // Octave: Ctrl+Up/Down
+      if (mod && (key === "ArrowUp" || key === "ArrowDown")) {
+        if (targets.length) { e.preventDefault(); changeOctave(targets, key === "ArrowUp" ? 1 : -1); }
+        return;
+      }
+      if (mod || e.altKey) return;
+
+      // Navigation
+      if (key === "ArrowRight" && e.shiftKey) {
+        e.preventDefault();
+        const last = Math.max(cursorStep, ...extraSelected);
+        if (last < cursorNotes.length - 1) setExtraSelected((p) => [...p, last + 1]);
+      } else if (key === "ArrowLeft" && e.shiftKey) {
+        e.preventDefault();
+        setExtraSelected((p) => p.slice(0, -1));
+      } else if (key === "ArrowRight") { e.preventDefault(); moveNext(); }
+      else if (key === "ArrowLeft") { e.preventDefault(); movePrev(); }
+      else if (key === "Home") { e.preventDefault(); setCursorStep(0); setExtraSelected([]); }
+      else if (key === "End") { e.preventDefault(); setCursorStep(Math.max(0, cursorNotes.length - 1)); setExtraSelected([]); }
+      else if (key === "Escape") { setExtraSelected([]); }
+
+      // Pitch: Up/Down = semitone
+      else if (key === "ArrowUp" || key === "ArrowDown") {
+        if (targets.length) { e.preventDefault(); changeSemitone(targets, key === "ArrowUp" ? 1 : -1); }
+      }
+
+      // Delete
+      else if ((key === "Delete" || key === "Backspace") && targets.length) {
+        e.preventDefault();
+        // delete highest xmlIndex first so earlier indices stay valid
+        let xml = currentXml;
+        [...targets].sort((a, b) => b.measure - a.measure || b.xmlIndex - a.xmlIndex)
+          .forEach((n) => { xml = deleteNote(xml, n.measure, n.xmlIndex); });
+        pushXml(xml);
+      }
+
+      // Durations: 3=16th 4=8th 5=quarter 6=half 7=whole, "." toggles dot
+      else if (key in DURATION_KEYS && cursorNote) {
+        e.preventDefault();
+        let xml = currentXml;
+        [cursorStep, ...extraSelected].map((i) => cursorNotes[i]).filter(Boolean)
+          .forEach((n) => { xml = updateNoteDuration(xml, n.measure, n.xmlIndex, DURATION_KEYS[key]); });
+        pushXml(xml);
+      } else if (key === "." && cursorNote) {
+        e.preventDefault();
+        const t = cursorNote.type;
+        const next = t.endsWith(".") ? t.slice(0, -1) : `${t}.`;
+        pushXml(updateNoteDuration(currentXml, cursorNote.measure, cursorNote.xmlIndex, next));
+      }
+
+      // Letters A–G: set pitch name (nearest octave); Shift+letter adds a chord note
+      else if (/^[a-g]$/.test(key) && cursorNote && !cursorNote.isRest) {
+        e.preventDefault();
+        const step = key.toUpperCase();
+        const octave = nearestOctave(cursorNote.step, cursorNote.octave, step);
+        if (e.shiftKey) pushXml(addChordNote(currentXml, cursorNote.measure, cursorNote.xmlIndex, step, octave, 0));
+        else pushXml(updateNotePitch(currentXml, cursorNote.measure, cursorNote.xmlIndex, step, octave, 0));
+      } else if (/^[a-g]$/.test(key) && cursorNote?.isRest) {
+        e.preventDefault();
+        const step = key.toUpperCase();
+        pushXml(insertNoteAtPosition(currentXml, cursorNote.measure, cursorNote.xmlIndex, step, 4, 0, cursorNote.type));
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [cursorNote, cursorStep, extraSelected, cursorNotes, histIdx, history, moveNext, movePrev]);
+  });
 
   const pushXml = (newXml: string) => {
     if (currentModel === "legato") {
@@ -167,6 +277,21 @@ export function EditorPage() {
       setHomrHistory((prev) => [...prev.slice(0, homrHistIdx + 1), newXml]);
       setHomrHistIdx((i) => i + 1);
     }
+  };
+
+  const changeOctave = (notes: ParsedNote[], delta: number) => {
+    let xml = currentXml;
+    for (const n of notes) xml = updateNotePitch(xml, n.measure, n.xmlIndex, n.step, n.octave + delta, n.alter);
+    pushXml(xml);
+  };
+
+  const changeSemitone = (notes: ParsedNote[], delta: number) => {
+    let xml = currentXml;
+    for (const n of notes) {
+      const { step, octave, alter } = shiftSemitone(n.step, n.octave, n.alter, delta);
+      xml = updateNotePitch(xml, n.measure, n.xmlIndex, step, octave, alter);
+    }
+    pushXml(xml);
   };
 
   const changePitchMulti = (notes: ParsedNote[], delta: number) => {
@@ -319,6 +444,19 @@ export function EditorPage() {
     setChordPopup({ harmony, clientX, clientY, value: harmony.label });
   };
 
+  // Open the chord popup for the selected note (add a new chord, or edit/remove the existing one).
+  const openChordForNote = (note: ParsedNote) => {
+    const harmony = getHarmonyAtNote(currentXml, note.measure, note.xmlIndex);
+    const pos = canvasRef.current?.getNoteClientPos(note);
+    setChordPopup({
+      harmony,
+      note,
+      clientX: (pos?.x ?? window.innerWidth / 2) + 48,
+      clientY: (pos?.y ?? window.innerHeight / 3) + 48 - 24,
+      value: harmony?.label ?? "",
+    });
+  };
+
   const handleComposerCommit = (composer: string) => {
     pushXml(updateComposerInXml(currentXml, composer));
   };
@@ -407,9 +545,8 @@ export function EditorPage() {
   };
 
   const handleExportPDF = () => {
-    const osmdDiv = canvasRef.current?.getOsmdDiv();
-    if (!osmdDiv) return;
-    const svgContent = osmdDiv.innerHTML;
+    const svgContent = canvasRef.current?.getCleanSvgHtml();
+    if (!svgContent) return;
     const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     const titleEsc = esc(displayTitle);
     const composerEsc = scoreInfo?.composer ? esc(scoreInfo.composer) : "";
@@ -629,6 +766,14 @@ export function EditorPage() {
         {/* Add / Delete Bar buttons — shown when a note is selected */}
         {cursorNote && (
           <div className="flex items-center gap-1">
+            <button
+              onClick={() => openChordForNote(cursorNote)}
+              className="flex items-center gap-1 px-2 sm:px-3 py-1.5 rounded-lg border-2 border-[#1C1917]/40 bg-white hover:bg-[#B8D8E8] hover:border-[#1C1917] text-xs font-medium text-[#1C1917]/60 hover:text-[#1C1917] transition-all shadow-[2px_2px_0_#1C1917]/30 hover:shadow-[2px_2px_0_#1C1917]"
+              title="Add or edit chord symbol on this note (Ctrl+K)"
+            >
+              <Music2 className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Chord</span>
+            </button>
             <button
               onClick={handleAddMeasure}
               className="flex items-center gap-1 px-2 sm:px-3 py-1.5 rounded-lg border-2 border-[#1C1917]/40 bg-white hover:bg-[#B8D4B0] hover:border-[#1C1917] text-xs font-medium text-[#1C1917]/60 hover:text-[#1C1917] transition-all shadow-[2px_2px_0_#1C1917]/30 hover:shadow-[2px_2px_0_#1C1917]"
@@ -856,6 +1001,8 @@ export function EditorPage() {
         </div>
       </div>
 
+      <KeyboardShortcuts />
+
       {/* Chord symbol edit popup */}
       {chordPopup && (
         <div
@@ -870,12 +1017,15 @@ export function EditorPage() {
             onChange={(e) => setChordPopup((p) => p ? { ...p, value: e.target.value } : null)}
             onBlur={() => {
               const v = chordPopup.value.trim();
-              if (v) {
-                if (!validateChordLabel(v)) {
-                  toast.error(`Unrecognized chord "${v}" — try e.g. Cmaj7, Dm7, Gsus4`);
-                } else {
-                  pushXml(updateHarmony(currentXml, chordPopup.harmony.index, v));
-                }
+              if (v && !validateChordLabel(v)) {
+                toast.error(`Unrecognized chord "${v}" — try e.g. Cmaj7, Dm7, Gsus4`);
+              } else if (chordPopup.note) {
+                // Add / replace / (blank) remove the chord on this note
+                const next = setHarmonyAtNote(currentXml, chordPopup.note.measure, chordPopup.note.xmlIndex, v);
+                if (next !== currentXml) pushXml(next);
+              } else if (chordPopup.harmony) {
+                // Clicked an existing chord symbol: blank removes it, otherwise replace
+                pushXml(v ? updateHarmony(currentXml, chordPopup.harmony.index, v) : deleteHarmony(currentXml, chordPopup.harmony.index));
               }
               setChordPopup(null);
             }}
@@ -885,8 +1035,7 @@ export function EditorPage() {
               e.stopPropagation();
             }}
             className="text-sm font-mono font-medium text-[#1C1917] border-none outline-none bg-transparent w-20"
-            placeholder={chordPopup.harmony.label}
-          />
+                      />
         </div>
       )}
 

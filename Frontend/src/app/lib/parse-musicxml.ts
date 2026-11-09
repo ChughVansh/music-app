@@ -894,6 +894,77 @@ export function updateHarmony(xml: string, index: number, chordLabel: string): s
   return serializeXml(doc);
 }
 
+// A <harmony> attaches to the note that follows it. For a note inside a chord (<chord/>),
+// the anchor is the first note of that chord group.
+function anchorNoteEl(measure: Element, xmlNoteIdx: number): Element | null {
+  const notes = Array.from(measure.getElementsByTagName("note"));
+  let i = xmlNoteIdx;
+  if (!notes[i]) return null;
+  while (i > 0 && notes[i].getElementsByTagName("chord").length > 0) i--;
+  return notes[i];
+}
+
+function harmoniesBefore(anchor: Element): Element[] {
+  const out: Element[] = [];
+  let prev = anchor.previousElementSibling;
+  while (prev && prev.nodeName === "harmony") { out.push(prev); prev = prev.previousElementSibling; }
+  return out;
+}
+
+/** The chord symbol attached to the given note, if any. */
+export function getHarmonyAtNote(xml: string, measureIdx: number, xmlNoteIdx: number): ParsedHarmony | null {
+  const doc = parseXml(xml);
+  const measure = doc.getElementsByTagName("measure")[measureIdx];
+  const anchor = measure ? anchorNoteEl(measure, xmlNoteIdx) : null;
+  if (!anchor) return null;
+  const existing = harmoniesBefore(anchor).pop(); // earliest of the adjacent run
+  if (!existing) return null;
+  const idx = Array.from(doc.getElementsByTagName("harmony")).indexOf(existing);
+  return parseHarmonies(xml).find((h) => h.index === idx) ?? null;
+}
+
+/**
+ * Add, replace, or (blank label) remove the chord symbol on a note.
+ * Returns the XML unchanged if the label can't be parsed.
+ */
+export function setHarmonyAtNote(xml: string, measureIdx: number, xmlNoteIdx: number, label: string): string {
+  const trimmed = label.trim();
+  if (trimmed && !parseChordLabel(trimmed)) return xml;
+  const doc = parseXml(xml);
+  const measure = doc.getElementsByTagName("measure")[measureIdx];
+  const anchor = measure ? anchorNoteEl(measure, xmlNoteIdx) : null;
+  if (!measure || !anchor) return xml;
+
+  const adjacent = harmoniesBefore(anchor);
+  if (!trimmed) {
+    if (adjacent.length === 0) return xml;
+    adjacent.forEach((h) => h.parentNode?.removeChild(h));
+    return serializeXml(doc);
+  }
+
+  let target = adjacent.pop(); // reuse the earliest; drop any extras
+  adjacent.forEach((h) => h.parentNode?.removeChild(h));
+  if (!target) {
+    target = doc.createElement("harmony");
+    const root = doc.createElement("root");
+    const step = doc.createElement("root-step"); step.textContent = "C";
+    root.appendChild(step);
+    const kind = doc.createElement("kind"); kind.textContent = "major";
+    target.appendChild(root); target.appendChild(kind);
+    measure.insertBefore(target, anchor);
+  }
+  const idx = Array.from(doc.getElementsByTagName("harmony")).indexOf(target);
+  return updateHarmony(serializeXml(doc), idx, trimmed);
+}
+
+export function deleteHarmony(xml: string, index: number): string {
+  const doc = parseXml(xml);
+  const el = Array.from(doc.getElementsByTagName("harmony"))[index];
+  if (!el) return xml;
+  el.parentNode?.removeChild(el);
+  return serializeXml(doc);
+}
+
 export function updateComposerInXml(xml: string, composer: string): string {
   const doc = parseXml(xml);
   const el = doc.querySelector("creator[type='composer']") ?? doc.querySelector("creator");

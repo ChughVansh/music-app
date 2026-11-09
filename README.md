@@ -1,22 +1,24 @@
 # Oh Sheet!
-> Turn a photo of any sheet music into an editable digital score — instantly.
+> Turn a photo of any sheet music into an editable digital score (MusicXML)
 
-**Oh Sheet!** is a CS 343 course project by [Vansh Chugh](https://github.com/vansh-c2002), [Khizran Fatima](https://github.com/kfatima317), and [Anh Phan](https://github.com/salad905).
+**Oh Sheet!** is a CS 343 course project by [Vansh Chugh](https://github.com/ChughVansh), [Khizran Fatima](https://github.com/kfatima317), and [Anh Phan](https://github.com/salad905).
 
-Upload a photo or scan of printed sheet music — as a PNG, JPG, or multi-page PDF — and get back a clean, editable `.musicxml` file that opens directly in MuseScore.
+Oh Sheet! is a browser-based optical music recognition (OMR) tool for printed classical scores and handwritten jazz lead sheets, with no installation or payment required. Upload a photo or scan (PNG, JPG, or multi-page PDF), choose *classical* or *jazz*, and get back an editable, playable `.musicxml` file that opens directly in MuseScore.
+
+Three independently pretrained backends sit behind one interface: **Legato** (default for classical), **homr** (alternate classical model you can compare against), and **Jazzmus** (handwritten jazz lead sheets, including chord symbols). All three converge on a single in-browser editor, player, and score library.
 
 ---
 
 ## How It Works
-Upload PNG, JPG, or PDF (single or multiple files)
+Upload PNG, JPG, or PDF (single or multiple files; PDFs are rasterized per page)
 ↓
-Files validated + ad countdown on free tier
+Choose Classical or Jazz
 ↓
-Modal GPU endpoint runs HOMR (OMR model) on each page
+Modal GPU endpoint routes to Legato / homr (classical) or Jazzmus (jazz)
 ↓
-MusicXML returned (~3–5 min per page)
+Output converted to a single MusicXML document
 ↓
-View result in editor → export .musicxml → open in MuseScore
+View and edit in the browser → export .musicxml → open in MuseScore
 
 ---
 
@@ -25,16 +27,18 @@ View result in editor → export .musicxml → open in MuseScore
 **Upload**
 - Drag-and-drop anywhere on the page, or browse/camera
 - Multi-file upload with drag-to-reorder page preview
-- Multi-page PDF support — every page is processed automatically
+- Multi-page PDF support: every page is processed automatically
 - Per-image crop and rotate in the preview lightbox
-- Classical (HOMR) and Jazz (Jazzmus) model selection
+- Classical and Jazz model selection, with an optional alternate classical model (homr) to compare
 
 **Editor**
 - Interactive sheet music viewer powered by OpenSheetMusicDisplay
 - Click any note to select it; shift-click for multi-select
-- Pitch editing — click up/down, drag a note vertically, or use arrow keys
+- Pitch editing: click up/down, drag a note vertically, or use the keyboard
 - Accidental, duration, and chord-note controls in the properties panel
-- Inline chord symbol editing (click any chord label to rename)
+- Chord symbols: click a chord to rename or remove it, or add one to any note with the Chord button (Ctrl+K), including on lead sheets where none were detected
+- Consistent 4 bars per line
+- Supports several keyboard shortcuts (see the keyboard button at the bottom right of the editor)
 - Transpose entire score by semitone or octave
 - Playback with BPM control; **click a note to start playing from that point**
 - Undo / redo history
@@ -44,11 +48,7 @@ View result in editor → export .musicxml → open in MuseScore
 - One-click export to `.musicxml` (opens in MuseScore, Sibelius, etc.)
 - Export to PDF via browser print
 - Google OAuth sign-in (Firebase Auth)
-- Personal library — save, browse, and re-open past scores (Firestore)
-
-**Other**
-- Ad-supported free tier (30-second countdown before processing)
-- Live at [music-app-924.pages.dev](https://music-app-924.pages.dev)
+- Personal library: save, browse, and re-open past scores (Firestore)
 
 ---
 
@@ -56,18 +56,18 @@ View result in editor → export .musicxml → open in MuseScore
 
 ### Prerequisites
 - [Node.js](https://nodejs.org/) v18+
-- [pnpm](https://pnpm.io/) — install with `brew install pnpm` (Mac) or `npm install -g pnpm`
-- Environment variables (ask Vansh) — see `.env.example`
+- [pnpm](https://pnpm.io/) (install with `brew install pnpm` on Mac or `npm install -g pnpm`)
+- Environment variables: see `.env.example`
 
 ### Frontend Setup
 
 ```bash
-git clone https://github.com/vansh-c2002/music-app.git
+git clone https://github.com/ChughVansh/music-app.git
 cd music-app/Frontend
 
 # Copy the env template and fill in the values
 cp .env.example .env
-# Edit .env — set VITE_API_URL and all VITE_FIREBASE_* vars (ask Vansh)
+# Edit .env: set VITE_API_URL and all VITE_FIREBASE_* vars
 
 pnpm install
 pnpm dev
@@ -93,7 +93,7 @@ pnpm dev
 | Animations | Motion (Framer Motion) |
 | Auth | Firebase Authentication (Google OAuth) |
 | Database | Firestore (user score library, inline thumbnails) |
-| Backend | Python + FastAPI + [HOMR](https://github.com/liebharc/homr) OMR model |
+| Backend | Python + FastAPI + [Legato](https://github.com/guang-yng/legato), [homr](https://github.com/liebharc/homr), and Jazzmus OMR models |
 | PDF conversion | pdf2image + poppler |
 | GPU Hosting | [Modal](https://modal.com) (T4 GPU, pay-per-invocation) |
 | Frontend Hosting | Cloudflare Pages |
@@ -103,7 +103,7 @@ pnpm dev
 ## Project Structure
 music-app/
 ├── Backend/
-│   └── modal_app.py        # Modal GPU endpoint — HOMR inference, Firebase token verification
+│   └── modal_app.py        # Modal GPU endpoint: OMR inference, Firebase token verification
 ├── Frontend/
 │   ├── src/app/
 │   │   ├── pages/          # LandingPage, UploadPage, EditorPage, LibraryPage
@@ -119,7 +119,7 @@ music-app/
 
 ---
 
-## Backend Deployment (Vansh only)
+## Backend Deployment
 
 The Modal backend is deployed once and shared across the team. To redeploy after changes:
 
@@ -142,7 +142,7 @@ modal deploy Backend/modal_app.py
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/transcribe-multi` | POST | Multiple files or PDF → MusicXML. Requires `score_type` form field: `"classical"` (HOMR) or `"jazz"` (Jazzmus) |
+| `/transcribe-multi` | POST | Multiple files or PDF → MusicXML. Requires `score_type` form field: `"classical"` (Legato by default, or homr via the `model` field) or `"jazz"` (Jazzmus) |
 
 ---
 
@@ -154,7 +154,7 @@ modal deploy Backend/modal_app.py
    - **Build command**: `pnpm install && pnpm build`
    - **Output directory**: `dist`
 3. Add environment variables (all `VITE_*` keys from `.env.example`)
-4. Deploy — live at `*.pages.dev`
+4. Deploy. Live at `*.pages.dev`
 
 ---
 
@@ -165,14 +165,3 @@ modal deploy Backend/modal_app.py
 | Vansh Chugh | ML / OMR model + backend |
 | Khizran Fatima | Frontend & UI/UX + backend |
 | Anh Phan | Research + integration + backend |
-
----
-
-## Roadmap
-
-- [ ] CoT post-hoc correction — pipe HOMR output through an LLM to flag music theory violations before showing the result
-- [ ] Multi-page editor — stitch multiple pages of MusicXML into a single scrollable score
-- [ ] Handwritten score support — integrate the ISMIR 2025 jazz lead sheet model for handwritten input
-- [x] Auth + user accounts — Google OAuth + personal score library
-- [x] Mobile-responsive editor layout
-- [x] Playback seek — start playing from any selected note
