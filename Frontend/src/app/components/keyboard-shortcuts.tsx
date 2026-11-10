@@ -1,5 +1,5 @@
 import { X, Keyboard } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 
 export function KeyboardShortcuts() {
@@ -10,21 +10,36 @@ export function KeyboardShortcuts() {
     { key: "← / →", action: "Previous / next note" },
     { key: "Ctrl + ← / →", action: "Previous / next measure" },
     { key: "Shift + ← / →", action: "Extend / shrink selection" },
-    { key: "Home / End", action: "First / last note" },
+    { key: "Ctrl + Alt + ↑ / ↓", action: "Move to staff above / below" },
+    { key: "Home / End", action: "First / last note on this staff" },
     { key: "↑ / ↓", action: "Raise / lower by semitone" },
     { key: "Ctrl + ↑ / ↓", action: "Raise / lower by octave" },
     { key: "A – G", action: "Set pitch name" },
     { key: "Shift + A – G", action: "Add note to chord" },
-    { key: "3 4 5 6 7", action: "16th / 8th / quarter / half / whole" },
+    { key: "Alt + 2 – 9", action: "Add interval above" },
+    { key: "Alt + Shift + ↑ / ↓", action: "Raise / lower by scale step" },
+    { key: "2 3 4 5 6 7", action: "32nd / 16th / 8th / quarter / half / whole" },
     { key: ".", action: "Toggle dotted duration" },
     { key: "Delete", action: "Delete selected notes" },
     { key: "Ctrl + B", action: "Insert measure" },
     { key: "Ctrl + Delete", action: "Delete measure" },
-    { key: "Ctrl + K", action: "Add / edit chord symbol" },
+    { key: "Ctrl + K", action: "Add / edit chord symbol (Space = next beat)" },
+    { key: "?", action: "Show this list" },
     { key: "Ctrl + Z", action: "Undo" },
     { key: "Ctrl + Shift + Z / Ctrl + Y", action: "Redo" },
     { key: "Ctrl + S", action: "Save to library" },
   ];
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      if (e.key === "?") setIsOpen((v) => !v);
+      else if (e.key === "Escape") setIsOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   return (
     <>

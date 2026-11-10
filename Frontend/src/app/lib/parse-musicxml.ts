@@ -5,7 +5,8 @@ export interface ParsedNote {
   localMeasure: number; // 0-based index within its own <part> (matches OSMD's MeasureList index)
   partIndex: number;    // which <part> this note belongs to
   staffId: number;      // unique 0-based staff index derived from (partIndex, <staff> number)
-  beat: number;        // 0-based beat within measure
+  beat: number;        // 0-based note count within measure (keeps counting across <backup>, so not a time)
+  onset: number;       // start time within the measure in <divisions> units (aligns voices and staves)
   step: string;        // C D E F G A B  (or "R" for rest)
   octave: number;
   alter: number;       // -1 flat  0 natural  1 sharp
@@ -95,6 +96,18 @@ export function parseMusicXml(xml: string): ParsedScore {
       const noteEls = measure.getElementsByTagName("note");
       let beat = 0;
 
+      // Real start time of each note, honouring <backup>/<forward> and chords.
+      const onsets = new Map<Element, number>();
+      let clock = 0, lastOnset = 0;
+      for (const child of Array.from(measure.children)) {
+        const dur = parseFloat(child.getElementsByTagName("duration")[0]?.textContent ?? "0") || 0;
+        if (child.tagName === "note") {
+          if (child.getElementsByTagName("chord").length > 0) onsets.set(child, lastOnset);
+          else { lastOnset = clock; onsets.set(child, clock); clock += dur; }
+        } else if (child.tagName === "backup") clock -= dur;
+        else if (child.tagName === "forward") clock += dur;
+      }
+
       for (let n = 0; n < noteEls.length; n++) {
         const noteEl = noteEls[n];
         const isRest = noteEl.getElementsByTagName("rest").length > 0;
@@ -118,6 +131,7 @@ export function parseMusicXml(xml: string): ParsedScore {
           partIndex: p,
           staffId: 0, // filled in below
           beat: beat - 1,
+          onset: onsets.get(noteEl) ?? 0,
           step: isRest ? "R" : step,
           octave: isRest ? 4 : octave,
           alter: isRest ? 0 : alter,

@@ -43,7 +43,7 @@ function updateTitleInXml(xml: string, title: string): string {
   return xml.replace(/(<score-partwise[^>]*>)/, `$1\n  <movement-title>${escaped}</movement-title>`);
 }
 
-const DURATION_KEYS: Record<string, string> = { "3": "sixteenth", "4": "eighth", "5": "quarter", "6": "half", "7": "whole" };
+const DURATION_KEYS: Record<string, string> = { "2": "32nd", "3": "sixteenth", "4": "eighth", "5": "quarter", "6": "half", "7": "whole" };
 
 const SHARP_SPELL: [string, number][] = [["C",0],["C",1],["D",0],["D",1],["E",0],["F",0],["F",1],["G",0],["G",1],["A",0],["A",1],["B",0]];
 const FLAT_SPELL: [string, number][] = [["C",0],["D",-1],["D",0],["E",-1],["E",0],["F",0],["G",-1],["G",0],["A",-1],["A",0],["B",-1],["B",0]];
@@ -159,15 +159,46 @@ export function EditorPage() {
     };
   }, []);
 
-  const moveNext = useCallback(() => {
-    setCursorStep((s) => Math.min(s + 1, cursorNotes.length - 1));
-    setExtraSelected([]);
-  }, [cursorNotes.length]);
+  // Notes are listed in XML order, which on a grand staff runs the whole treble bar and then
+  // the whole bass bar (and voice 2 after voice 1). Navigation instead walks one staff in
+  // time order: by bar, then onset, then XML order.
+  const staffInTimeOrder = (staffId: number): number[] =>
+    cursorNotes
+      .map((n, i) => ({ n, i }))
+      .filter(({ n }) => n.staffId === staffId)
+      .sort((x, y) => x.n.localMeasure - y.n.localMeasure || x.n.onset - y.n.onset || x.i - y.i)
+      .map(({ i }) => i);
 
-  const movePrev = useCallback(() => {
-    setCursorStep((s) => Math.max(s - 1, 0));
+  const stepOnStaff = (from: number, dir: 1 | -1): number => {
+    const note = cursorNotes[from];
+    if (!note) return -1;
+    const order = staffInTimeOrder(note.staffId);
+    return order[order.indexOf(from) + dir] ?? -1;
+  };
+
+  const moveNext = () => {
+    const i = stepOnStaff(cursorStep, 1);
+    if (i !== -1) setCursorStep(i);
     setExtraSelected([]);
-  }, []);
+  };
+
+  const movePrev = () => {
+    const i = stepOnStaff(cursorStep, -1);
+    if (i !== -1) setCursorStep(i);
+    setExtraSelected([]);
+  };
+
+  // Ctrl+Alt+Up/Down: jump to the staff above/below at the same point in the bar
+  const switchStaff = (dir: 1 | -1) => {
+    if (!cursorNote) return;
+    const candidates = staffInTimeOrder(cursorNote.staffId + dir)
+      .map((i) => cursorNotes[i])
+      .filter((n) => n.partIndex === cursorNote.partIndex && n.localMeasure === cursorNote.localMeasure);
+    if (!candidates.length) return;
+    const best = candidates.reduce((a, n) => (Math.abs(n.onset - cursorNote.onset) < Math.abs(a.onset - cursorNote.onset) ? n : a));
+    setCursorStep(cursorNotes.indexOf(best));
+    setExtraSelected([]);
+  };
 
   // MuseScore-style shortcuts.
   useEffect(() => {
@@ -194,7 +225,7 @@ export function EditorPage() {
         e.preventDefault();
         const dir = key === "ArrowRight" ? 1 : -1;
         if (!cursorNote) return;
-        const target = cursorNotes.findIndex((n) => n.partIndex === cursorNote.partIndex && n.localMeasure === cursorNote.localMeasure + dir);
+        const target = cursorNotes.findIndex((n) => n.staffId === cursorNote.staffId && n.localMeasure === cursorNote.localMeasure + dir);
         if (target !== -1) { setCursorStep(target); setExtraSelected([]); }
         return;
       }
@@ -202,9 +233,27 @@ export function EditorPage() {
       if (mod && key === "b") { e.preventDefault(); handleAddMeasure(); return; }
       if (mod && (key === "Delete" || key === "Backspace")) { e.preventDefault(); handleDeleteMeasure(); return; }
 
+      if (mod && e.altKey && (key === "ArrowUp" || key === "ArrowDown")) {
+        e.preventDefault();
+        switchStaff(key === "ArrowUp" ? -1 : 1);
+        return;
+      }
+
       // Octave: Ctrl+Up/Down
       if (mod && (key === "ArrowUp" || key === "ArrowDown")) {
         if (targets.length) { e.preventDefault(); changeOctave(targets, key === "ArrowUp" ? 1 : -1); }
+        return;
+      }
+      // Alt+2..9: add an interval above the selected note
+      if (e.altKey && !mod && /^Digit[2-9]$/.test(e.code) && cursorNote && !cursorNote.isRest) {
+        e.preventDefault();
+        const { step, octave } = applyDiatonicStep(cursorNote.step, cursorNote.octave, Number(e.code[5]) - 1);
+        pushXml(addChordNote(currentXml, cursorNote.measure, cursorNote.xmlIndex, step, octave, 0));
+        return;
+      }
+      // Alt+Shift+Up/Down: move a scale step
+      if (e.altKey && e.shiftKey && !mod && (key === "ArrowUp" || key === "ArrowDown")) {
+        if (targets.length) { e.preventDefault(); changePitchMulti(targets, key === "ArrowUp" ? 1 : -1); }
         return;
       }
       if (mod || e.altKey) return;
@@ -212,15 +261,20 @@ export function EditorPage() {
       // Navigation
       if (key === "ArrowRight" && e.shiftKey) {
         e.preventDefault();
-        const last = Math.max(cursorStep, ...extraSelected);
-        if (last < cursorNotes.length - 1) setExtraSelected((p) => [...p, last + 1]);
+        const last = extraSelected.length ? extraSelected[extraSelected.length - 1] : cursorStep;
+        const next = stepOnStaff(last, 1);
+        if (next !== -1) setExtraSelected((p) => [...p, next]);
       } else if (key === "ArrowLeft" && e.shiftKey) {
         e.preventDefault();
         setExtraSelected((p) => p.slice(0, -1));
       } else if (key === "ArrowRight") { e.preventDefault(); moveNext(); }
       else if (key === "ArrowLeft") { e.preventDefault(); movePrev(); }
-      else if (key === "Home") { e.preventDefault(); setCursorStep(0); setExtraSelected([]); }
-      else if (key === "End") { e.preventDefault(); setCursorStep(Math.max(0, cursorNotes.length - 1)); setExtraSelected([]); }
+      else if (key === "Home" || key === "End") {
+        e.preventDefault();
+        const order = staffInTimeOrder(cursorNote?.staffId ?? 0);
+        const t = key === "Home" ? order[0] : order[order.length - 1];
+        if (t !== undefined) { setCursorStep(t); setExtraSelected([]); }
+      }
       else if (key === "Escape") { setExtraSelected([]); }
 
       // Pitch: Up/Down = semitone
@@ -451,6 +505,50 @@ export function EditorPage() {
     setChordPopup({
       harmony,
       note,
+      clientX: (pos?.x ?? window.innerWidth / 2) + 48,
+      clientY: (pos?.y ?? window.innerHeight / 3) + 48 - 24,
+      value: harmony?.label ?? "",
+    });
+  };
+
+  // Apply the chord popup's text to the score. Returns the resulting XML.
+  const commitChordPopup = (): string => {
+    if (!chordPopup) return currentXml;
+    const v = chordPopup.value.trim();
+    if (v && !validateChordLabel(v)) {
+      toast.error(`Unrecognized chord "${v}" — try e.g. Cmaj7, Dm7, Gsus4`);
+      return currentXml;
+    }
+    let next = currentXml;
+    if (chordPopup.note) {
+      // Add / replace / (blank) remove the chord on this note
+      next = setHarmonyAtNote(currentXml, chordPopup.note.measure, chordPopup.note.xmlIndex, v);
+    } else if (chordPopup.harmony) {
+      // Clicked an existing chord symbol: blank removes it, otherwise replace
+      next = v ? updateHarmony(currentXml, chordPopup.harmony.index, v) : deleteHarmony(currentXml, chordPopup.harmony.index);
+    }
+    if (next !== currentXml) pushXml(next);
+    return next;
+  };
+
+  const advanceChordPopup = () => {
+    const note = chordPopup?.note;
+    if (!note) return;
+    const next = commitChordPopup();
+    const curIdx = cursorNotes.findIndex((n) => n.measure === note.measure && n.xmlIndex === note.xmlIndex);
+    const order = staffInTimeOrder(note.staffId);
+    const cur = cursorNotes[curIdx];
+    const nextIdx = order.slice(order.indexOf(curIdx) + 1)
+      .find((i) => cursorNotes[i].localMeasure !== cur?.localMeasure || cursorNotes[i].onset !== cur?.onset) ?? -1;
+    if (curIdx === -1 || nextIdx === -1) { setChordPopup(null); return; }
+    const target = cursorNotes[nextIdx];
+    const harmony = getHarmonyAtNote(next, target.measure, target.xmlIndex);
+    const pos = canvasRef.current?.getNoteClientPos(target);
+    setCursorStep(nextIdx);
+    setExtraSelected([]);
+    setChordPopup({
+      harmony,
+      note: target,
       clientX: (pos?.x ?? window.innerWidth / 2) + 48,
       clientY: (pos?.y ?? window.innerHeight / 3) + 48 - 24,
       value: harmony?.label ?? "",
@@ -1015,23 +1113,15 @@ export function EditorPage() {
             autoFocus
             value={chordPopup.value}
             onChange={(e) => setChordPopup((p) => p ? { ...p, value: e.target.value } : null)}
-            onBlur={() => {
-              const v = chordPopup.value.trim();
-              if (v && !validateChordLabel(v)) {
-                toast.error(`Unrecognized chord "${v}" — try e.g. Cmaj7, Dm7, Gsus4`);
-              } else if (chordPopup.note) {
-                // Add / replace / (blank) remove the chord on this note
-                const next = setHarmonyAtNote(currentXml, chordPopup.note.measure, chordPopup.note.xmlIndex, v);
-                if (next !== currentXml) pushXml(next);
-              } else if (chordPopup.harmony) {
-                // Clicked an existing chord symbol: blank removes it, otherwise replace
-                pushXml(v ? updateHarmony(currentXml, chordPopup.harmony.index, v) : deleteHarmony(currentXml, chordPopup.harmony.index));
-              }
-              setChordPopup(null);
-            }}
+            onBlur={() => { commitChordPopup(); setChordPopup(null); }}
             onKeyDown={(e) => {
               if (e.key === "Enter") e.currentTarget.blur();
               if (e.key === "Escape") setChordPopup(null);
+              // Space / Tab: commit and jump to the next beat, keeping the input open
+              if ((e.key === " " || e.key === "Tab") && chordPopup.note) {
+                e.preventDefault();
+                advanceChordPopup();
+              }
               e.stopPropagation();
             }}
             className="text-sm font-mono font-medium text-[#1C1917] border-none outline-none bg-transparent w-20"
